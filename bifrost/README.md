@@ -30,6 +30,19 @@ The side panel stays open while you browse any page.
 The extension connects only to `https://bifrost.fabriclab.ca` — enforced by both
 `host_permissions` and a strict `Content-Security-Policy` in the manifest.
 
+## Code Security Scan
+
+Scanned with **Lacework FortiCNAPP Code Security** (IaC + SCA/SAST) on 2026-06-22.
+
+| Severity | IaC | SCA | Total |
+|----------|-----|-----|-------|
+| Critical |  0  |  0  |   0   |
+| High     |  0  |  0  |   0   |
+| Medium   |  0  |  0  |   0   |
+| Low      |  0  |  0  |   0   |
+
+**No findings in project code.** The scanner detected 39 weaknesses and secrets exclusively inside `.venv/` (third-party packages), which are excluded via `.lacework/codesec.yaml`.
+
 ## Files
 
 ```
