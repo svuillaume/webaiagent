@@ -1,9 +1,10 @@
 'use strict';
 
 // ── Constants ─────────────────────────────────────────────────────────────
-const MAX_TOKENS    = 512;
+const MAX_TOKENS     = 512;
 const PAGE_MAX_CHARS = 12000;
-const SYSTEM_PROMPT = 'Be concise. Answer in 1-3 sentences unless more detail is clearly needed. No filler phrases.';
+const SYSTEM_PROMPT  = 'Be concise. Answer in 1-3 sentences unless more detail is clearly needed. No filler phrases.';
+const ROLE_LABELS    = { user: 'you ›', ai: 'ai ›', system: 'sys ›' };
 
 const WEB_SEARCH_TOOL = {
   name: 'web_search',
@@ -15,11 +16,11 @@ const WEB_SEARCH_TOOL = {
 const history = [];
 let busy = false;
 
-// ── DOM ───────────────────────────────────────────────────────────────────
-const el         = id => document.getElementById(id);
-const urlInput   = el('url-input');
-const keyInput   = el('key-input');
-const searchInput = el('search-input');  // hidden field — holds SearXNG URL
+// ── DOM refs ──────────────────────────────────────────────────────────────
+const el          = id => document.getElementById(id);
+const urlInput    = el('url-input');
+const keyInput    = el('key-input');
+const searchInput = el('search-input'); // hidden — holds SearXNG base URL
 
 const setStatus = (text, state = '') => {
   el('status').textContent = text;
@@ -27,8 +28,8 @@ const setStatus = (text, state = '') => {
 };
 
 // ── Storage ───────────────────────────────────────────────────────────────
-// API key + Bifrost URL → chrome.storage.session (RAM only, cleared on Chrome close)
-// Model               → chrome.storage.local    (not sensitive, survives restart)
+// Sensitive values (URL, key) → session storage: RAM only, cleared on Chrome close.
+// Model preference            → local storage:   persists, not sensitive.
 chrome.storage.session.get(['bf_url', 'bf_key', 'bf_search'], ({ bf_url, bf_key, bf_search }) => {
   if (bf_url)    urlInput.value    = bf_url;
   if (bf_key)    keyInput.value    = bf_key;
@@ -44,45 +45,41 @@ async function autoFillFromConfig() {
     const res = await fetch(chrome.runtime.getURL('config.json'));
     if (!res.ok) return;
     const cfg = await res.json();
-    const set = (input, key, storeKey) => {
-      if (cfg[key] && !input.value) {
-        input.value = cfg[key];
-        chrome.storage.session.set({ [storeKey]: cfg[key] });
+    const fill = (input, cfgKey, storeKey) => {
+      if (cfg[cfgKey] && !input.value) {
+        input.value = cfg[cfgKey];
+        chrome.storage.session.set({ [storeKey]: cfg[cfgKey] });
       }
     };
-    set(urlInput,    'bifrost_url', 'bf_url');
-    set(keyInput,    'api_key',     'bf_key');
-    set(searchInput, 'searxng_url', 'bf_search');
+    fill(urlInput,    'bifrost_url', 'bf_url');
+    fill(keyInput,    'api_key',     'bf_key');
+    fill(searchInput, 'searxng_url', 'bf_search');
     if (cfg.bifrost_url || cfg.api_key) setStatus('config loaded', 'ok');
-  } catch { /* config.json absent — fields stay empty for manual entry */ }
+  } catch { /* config.json absent — user fills fields manually */ }
 }
 
-const storeSession = (key, input) => {
+const saveSession = (key, input) => {
   const v = input.value.trim();
   v ? chrome.storage.session.set({ [key]: v }) : chrome.storage.session.remove(key);
 };
 
-urlInput.addEventListener('change',   () => storeSession('bf_url',    urlInput));
-keyInput.addEventListener('change',   () => storeSession('bf_key',    keyInput));
-searchInput.addEventListener('change',() => storeSession('bf_search', searchInput));
-el('model').addEventListener('change',() => chrome.storage.local.set({ bf_model: el('model').value }));
+urlInput.addEventListener('change',    () => saveSession('bf_url',    urlInput));
+keyInput.addEventListener('change',    () => saveSession('bf_key',    keyInput));
+searchInput.addEventListener('change', () => saveSession('bf_search', searchInput));
+el('model').addEventListener('change', () => chrome.storage.local.set({ bf_model: el('model').value }));
 
-// ── SearXNG search ────────────────────────────────────────────────────────
-// Tries Docker SearXNG (localhost:8080) first, falls back to serve.py proxy
-// (localhost:8765/search) for environments without Docker.
+// ── Web search ────────────────────────────────────────────────────────────
+// Tries Docker SearXNG (8080) first; falls back to serve.py proxy (8765).
 async function webSearch(query) {
-  const q          = encodeURIComponent(query);
-  const dockerUrl  = `http://localhost:8080/search?q=${q}&format=json&language=en`;
-  const proxyUrl   = `http://localhost:8765/search?q=${q}`;
-
+  const q = encodeURIComponent(query);
   let res;
   try {
-    res = await fetch(dockerUrl, { signal: AbortSignal.timeout(4000) });
+    res = await fetch(`http://localhost:8080/search?q=${q}&format=json&language=en`,
+      { signal: AbortSignal.timeout(4000) });
   } catch {
-    // Docker not running — fall back to serve.py proxy
-    res = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+    res = await fetch(`http://localhost:8765/search?q=${q}`,
+      { signal: AbortSignal.timeout(8000) });
   }
-
   if (!res.ok) throw new Error(`Search returned ${res.status}`);
   const { results = [] } = await res.json();
   if (!results.length) return 'No results found.';
@@ -92,15 +89,13 @@ async function webSearch(query) {
 }
 
 // ── Markdown renderer ─────────────────────────────────────────────────────
-// Security: escape the full string BEFORE applying any transforms so that
-// model-generated content can never inject executable HTML.
+// Escape FIRST, then transform — model output can never inject executable HTML.
 function renderMarkdown(text) {
   const esc  = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const link = (href, label) => {
     const url = /^https?:\/\//i.test(href) ? href : `https://${href}`;
     return `<a class="ext-link" data-href="${url}">${label}</a>`;
   };
-
   return text.split(/(```[\s\S]*?```)/g).map((part, i) => {
     if (i % 2 === 1) {
       const code = part.replace(/^```\w*\n?/, '').replace(/```$/, '');
@@ -110,36 +105,30 @@ function renderMarkdown(text) {
     s = s.replace(/`([^`\n]+)`/g,     '<code>$1</code>');
     s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_, l, h) => link(h, l));
-    s = s.replace(/(?<!data-href=")(https?:\/\/[^\s<>"]+)/g, url => link(url, url));
-    s = s.replace(/(?<![/"'>])(www\.[a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s<>"]*)/g, url => link(url, url));
+    s = s.replace(/(?<!data-href=")(https?:\/\/[^\s<>"]+)/g,              u => link(u, u));
+    s = s.replace(/(?<![/"'>])(www\.[a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s<>"]*)/, u => link(u, u));
     return s;
   }).join('');
 }
 
-// Use inert <template> to parse HTML — prevents injected scripts from executing
+// Inert <template> parse — injected scripts never execute
 function setRendered(node, html) {
   const tpl = document.createElement('template');
   tpl.innerHTML = html;
   node.replaceChildren(tpl.content.cloneNode(true));
 }
 
-// ── Chat log helpers ──────────────────────────────────────────────────────
+// ── Chat log ──────────────────────────────────────────────────────────────
 function appendTurn(role, text = '') {
-  const LABELS = { user: 'you ›', ai: 'ai ›', system: 'sys ›' };
-  const turn   = document.createElement('div');
-  turn.className = 'turn';
-
-  const label = document.createElement('div');
-  label.className   = `role ${role}`;
-  label.textContent = LABELS[role] ?? role;
-
-  const body = document.createElement('div');
-  body.className = 'content';
+  const turn  = Object.assign(document.createElement('div'), { className: 'turn' });
+  const label = Object.assign(document.createElement('div'), {
+    className: `role ${role}`, textContent: ROLE_LABELS[role] ?? role,
+  });
+  const body  = Object.assign(document.createElement('div'), { className: 'content' });
   if (text) {
     if (role === 'ai') setRendered(body, renderMarkdown(text));
     else               body.textContent = text;
   }
-
   turn.append(label, body);
   el('log').appendChild(turn);
   scrollLog();
@@ -156,71 +145,64 @@ const resizePrompt = () => {
 // ── Clear ─────────────────────────────────────────────────────────────────
 el('clear').addEventListener('click', () => {
   history.length = 0;
-  el('log').innerHTML      = '';
+  el('log').innerHTML          = '';
   el('token-info').textContent = '';
   el('read-page').classList.remove('active');
   setStatus('—');
 });
 
 // ── Page reader ───────────────────────────────────────────────────────────
-// Injects a script into the active tab to extract visible text (no credentials sent)
 async function readCurrentPage() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error('No active tab found');
-
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
-    func: (maxChars) => {
+    args:   [PAGE_MAX_CHARS],
+    func:   (maxChars) => {
       const clone = document.cloneNode(true);
       clone.querySelectorAll('script,style,noscript,nav,footer,aside,iframe').forEach(n => n.remove());
       const text = (clone.body?.innerText || clone.body?.textContent || '')
         .replace(/\s{3,}/g, '\n\n').trim().slice(0, maxChars);
       return { title: document.title, url: location.href, text };
     },
-    args: [PAGE_MAX_CHARS],
   });
   return result;
 }
 
-el('read-page').addEventListener('click', async () => {
-  const btn = el('read-page');
-  btn.disabled = true;
-  setStatus('reading page…', 'busy');
-  try {
-    const page = await readCurrentPage();
-    history.push({ role: 'user',      content: `[Page context]\nTitle: ${page.title}\nURL: ${page.url}\n\n${page.text}` });
-    history.push({ role: 'assistant', content: 'Page loaded. Ask me anything about it.' });
-    appendTurn('system', `📄 "${page.title}"`);
-    appendTurn('ai',     'Page loaded. Ask me anything about it.');
-    btn.classList.add('active');
-    setStatus('page loaded', 'ok');
-  } catch (e) {
-    appendTurn('system', `Could not read page: ${e.message}`);
-    setStatus('error', 'err');
-  } finally {
-    btn.disabled = false;
-  }
-});
+const pageCtx = page => `[Page context]\nTitle: ${page.title}\nURL: ${page.url}\n\n${page.text}`;
 
-el('tldr').addEventListener('click', async () => {
-  const btn = el('tldr');
+// Shared wrapper for page-button actions: disables btn, restores on finish
+async function withPage(btnId, fn) {
+  const btn = el(btnId);
   btn.disabled = true;
   setStatus('reading page…', 'busy');
   try {
-    const page = await readCurrentPage();
-    history.push({ role: 'user',      content: `[Page context]\nTitle: ${page.title}\nURL: ${page.url}\n\n${page.text}` });
-    history.push({ role: 'assistant', content: 'Page loaded.' });
-    history.push({ role: 'user',      content: 'Give me a TL;DR summary of this page in 3-5 bullet points. Each bullet must end with a clickable markdown hyperlink to the most relevant source URL (use the page URL or any referenced URL from the content).' });
-    appendTurn('system', `📄 TL;DR — "${page.title}"`);
-    el('read-page').classList.add('active');
-    await send(true);
+    await fn(await readCurrentPage());
   } catch (e) {
     appendTurn('system', `Could not read page: ${e.message}`);
     setStatus('error', 'err');
   } finally {
     btn.disabled = false;
   }
-});
+}
+
+el('read-page').addEventListener('click', () => withPage('read-page', page => {
+  history.push({ role: 'user',      content: pageCtx(page) });
+  history.push({ role: 'assistant', content: 'Page loaded. Ask me anything about it.' });
+  appendTurn('system', `📄 "${page.title}"`);
+  appendTurn('ai',     'Page loaded. Ask me anything about it.');
+  el('read-page').classList.add('active');
+  setStatus('page loaded', 'ok');
+}));
+
+el('tldr').addEventListener('click', () => withPage('tldr', async page => {
+  history.push({ role: 'user',      content: pageCtx(page) });
+  history.push({ role: 'assistant', content: 'Page loaded.' });
+  history.push({ role: 'user',      content: 'TL;DR this page in 3-5 bullets. End each bullet with a markdown link to the most relevant source URL.' });
+  appendTurn('system', `📄 TL;DR — "${page.title}"`);
+  el('read-page').classList.add('active');
+  await send(true);
+}));
 
 // ── SSE stream parser ─────────────────────────────────────────────────────
 async function readStream(res, bubble, cursor) {
@@ -245,8 +227,8 @@ async function readStream(res, bubble, cursor) {
       if (ev.type === 'message_start')
         inputTk = ev.message?.usage?.input_tokens ?? 0;
       if (ev.type === 'message_delta') {
-        outputTk   = ev.usage?.output_tokens ?? outputTk;
-        stopReason = ev.delta?.stop_reason   ?? stopReason;
+        outputTk   = ev.usage?.output_tokens  ?? outputTk;
+        stopReason = ev.delta?.stop_reason    ?? stopReason;
       }
       if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use')
         toolCalls[ev.index] = { id: ev.content_block.id, name: ev.content_block.name, input_json: '' };
@@ -266,8 +248,8 @@ async function readStream(res, bubble, cursor) {
 }
 
 // ── Send ──────────────────────────────────────────────────────────────────
-// silentMode = true: history already contains the user turn (TL;DR path)
-async function send(silentMode = false) {
+// silent = true: caller already pushed the user turn (TL;DR path)
+async function send(silent = false) {
   if (busy) return;
 
   const baseUrl   = urlInput.value.trim().replace(/\/+$/, '');
@@ -277,12 +259,12 @@ async function send(silentMode = false) {
   if (!baseUrl) { appendTurn('system', 'No endpoint URL — enter the Bifrost base URL above.'); return; }
   if (!key)     { appendTurn('system', 'No API key — enter your sk-bf-… key above.');          return; }
 
-  if (!silentMode) {
+  if (!silent) {
     const text = el('prompt').value.trim();
     if (!text) return;
     history.push({ role: 'user', content: text });
     appendTurn('user', text);
-    el('prompt').value      = '';
+    el('prompt').value        = '';
     el('prompt').style.height = 'auto';
   }
 
@@ -303,7 +285,6 @@ async function send(silentMode = false) {
   try {
     while (true) {
       setStatus('streaming…', 'busy');
-
       const body = {
         model: el('model').value, max_tokens: MAX_TOKENS,
         stream: true, system: SYSTEM_PROMPT, messages: history,
@@ -313,31 +294,30 @@ async function send(silentMode = false) {
       const res = await fetch(`${baseUrl}/v1/messages`, {
         method: 'POST', headers, body: JSON.stringify(body),
       });
-      if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+      if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
 
       const { out, inputTk: iTk, outputTk: oTk, stopReason, toolCalls } =
         await readStream(res, bubble, cursor);
       inputTk += iTk; outputTk += oTk;
 
-      // Tool-use loop — execute search and continue
       if (hasSearch && stopReason === 'tool_use' && toolCalls.length) {
         const asst = out ? [{ type: 'text', text: out }] : [];
         for (const tc of toolCalls) {
-          let input; try { input = JSON.parse(tc.input_json); } catch { input = {}; }
+          const input = tryParse(tc.input_json);
           asst.push({ type: 'tool_use', id: tc.id, name: tc.name, input });
         }
         history.push({ role: 'assistant', content: asst });
 
-        const results = [];
+        const toolResults = [];
         for (const tc of toolCalls) {
-          let input; try { input = JSON.parse(tc.input_json); } catch { input = {}; }
-          setStatus(`searching: ${input.query}…`, 'busy');
+          const { query } = tryParse(tc.input_json);
+          setStatus(`searching: ${query}…`, 'busy');
           let result;
-          try   { result = await webSearch(input.query); }
+          try   { result = await webSearch(query); }
           catch (e) { result = `Search error: ${e.message}`; }
-          results.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
+          toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
         }
-        history.push({ role: 'user', content: results });
+        history.push({ role: 'user', content: toolResults });
         bubble.innerHTML = '';
         bubble.appendChild(cursor);
         continue;
@@ -350,7 +330,6 @@ async function send(silentMode = false) {
       el('token-info').textContent = `in:${inputTk} out:${outputTk}`;
       break;
     }
-
   } catch (err) {
     cursor.remove();
     bubble.textContent = `Error: ${err.message}`;
@@ -362,6 +341,8 @@ async function send(silentMode = false) {
     scrollLog();
   }
 }
+
+const tryParse = json => { try { return JSON.parse(json); } catch { return {}; } };
 
 // Open links in a new tab — target="_blank" is blocked in MV3 side panels
 el('log').addEventListener('click', e => {
