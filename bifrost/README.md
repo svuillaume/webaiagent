@@ -7,7 +7,7 @@ A minimal Chrome side-panel chat UI for the [Bifrost AI Gateway](https://bifrost
 1. Open `chrome://extensions`
 2. Enable **Developer mode** (top-right toggle)
 3. Click **Load unpacked** → select this `extension/` folder
-4. Click the ⚡ icon in the toolbar to open the side panel
+4. Click the icon in the toolbar to open the side panel
 
 ## Usage
 
