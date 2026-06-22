@@ -83,10 +83,12 @@ On first load, the URL and API key are **auto-filled from `.env`** via serve.py.
 
 ### Page tools
 
-| Button | What it does |
-|--------|-------------|
-| **📄 Read Web Page** | Loads the current tab's text into AI context — then ask questions about it |
-| **TL;DR** | Reads the page and streams a 3–5 bullet summary |
+| Button | Capability | What it does |
+|--------|-----------|-------------|
+| **📄 Read Web Page** | Read Web Page and Analysis | Loads the current tab's full text into AI context. Ask follow-up questions, request summaries, extract data, or compare multiple pages. |
+| **TL;DR** | Quick Summary | Reads the current page and immediately streams a 3–5 bullet summary. |
+| **🛡 CodeSec** | FortiCNAPP Code Scan Review | Extracts all code from the current page and runs a FortiCNAPP SCA + SAST scan. Results show CVEs, severity levels, affected packages, fix versions, and SAST findings with file/line references. Ask the AI to explain or remediate any finding. |
+| **📋 Compliance** | FortiCNAPP Compliance Report and Analysis | Generates a PDF compliance report from FortiCNAPP for any of 54 frameworks (CIS, NIST, PCI DSS, SOC 2, HIPAA, ISO 27001…). After download, click **🔍 Ask about this PDF** to load the full report into chat and ask the AI questions about findings, gaps, and remediation steps. |
 
 ---
 
