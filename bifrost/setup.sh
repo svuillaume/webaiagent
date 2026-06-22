@@ -29,16 +29,9 @@ if [ ! -f .env ]; then
   read -rp "  Press Enter once you've edited .env, or Ctrl+C to quit: "
 fi
 
-# ── Step 2: config.json ───────────────────────────────────────────────────
+# ── Step 2: config.json (auto-generated from .env — no manual edit needed) ──
 if [ ! -f extension/config.json ]; then
-  warn "extension/config.json not found — creating from template"
   cp extension/config.json.tpl extension/config.json
-  echo ""
-  echo "  Edit extension/config.json and set:"
-  echo "    bifrost_url  = your Bifrost endpoint"
-  echo "    api_key      = your sk-bf-… key"
-  echo ""
-  read -rp "  Press Enter once done: "
 fi
 
 # ── Step 3: choose backend ────────────────────────────────────────────────

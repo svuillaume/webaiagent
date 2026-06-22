@@ -41,21 +41,33 @@ chrome.storage.local.get('bf_model', ({ bf_model }) => {
 });
 
 async function autoFillFromConfig() {
+  // Try serve.py /config first (single source of truth: .env)
+  // Fall back to bundled config.json for offline/dev use
+  let cfg = null;
   try {
-    const res = await fetch(chrome.runtime.getURL('config.json'));
-    if (!res.ok) return;
-    const cfg = await res.json();
-    const fill = (input, cfgKey, storeKey) => {
-      if (cfg[cfgKey] && !input.value) {
-        input.value = cfg[cfgKey];
-        chrome.storage.session.set({ [storeKey]: cfg[cfgKey] });
-      }
-    };
-    fill(urlInput,    'bifrost_url', 'bf_url');
-    fill(keyInput,    'api_key',     'bf_key');
-    fill(searchInput, 'searxng_url', 'bf_search');
-    if (cfg.bifrost_url || cfg.api_key) setStatus('config loaded', 'ok');
-  } catch { /* config.json absent — user fills fields manually */ }
+    const res = await fetch('http://localhost:8765/config');
+    if (res.ok) cfg = await res.json();
+  } catch { /* serve.py not running */ }
+
+  if (!cfg) {
+    try {
+      const res = await fetch(chrome.runtime.getURL('config.json'));
+      if (res.ok) cfg = await res.json();
+    } catch { /* no config.json either */ }
+  }
+
+  if (!cfg) return;
+
+  const fill = (input, cfgKey, storeKey) => {
+    if (cfg[cfgKey] && !input.value) {
+      input.value = cfg[cfgKey];
+      chrome.storage.session.set({ [storeKey]: cfg[cfgKey] });
+    }
+  };
+  fill(urlInput,    'bifrost_url', 'bf_url');
+  fill(keyInput,    'api_key',     'bf_key');
+  fill(searchInput, 'searxng_url', 'bf_search');
+  if (cfg.bifrost_url || cfg.api_key) setStatus('config loaded', 'ok');
 }
 
 const saveSession = (key, input) => {

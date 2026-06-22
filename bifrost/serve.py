@@ -126,6 +126,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = json.dumps({
             'bifrost_url': env.get('ANTHROPIC_BASE_URL', ''),
             'api_key':     VIRTUAL_KEY,
+            'searxng_url': SEARXNG_URL,
         }).encode()
         self.send_json(200, body)
 
