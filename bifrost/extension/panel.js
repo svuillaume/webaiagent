@@ -4,7 +4,63 @@
 const MAX_TOKENS     = 512;
 const PAGE_MAX_CHARS = 12000;
 const SYSTEM_PROMPT  = 'Be concise. Answer in 1-3 sentences unless more detail is clearly needed. No filler phrases.';
-const ROLE_LABELS    = { user: 'you ›', ai: 'ai ›', system: 'sys ›' };
+const ROLE_LABELS    = { user: 'you', ai: 'ai', system: 'sys' };
+
+// ── Gateway profiles ──────────────────────────────────────────────────────
+// Each profile describes how to build the Authorization/API-key headers
+// for the /v1/messages endpoint of that gateway.
+const GATEWAYS = {
+  bifrost:  {
+    label:       '⚡ Bifrost',
+    urlHint:     'https://bifrost.xxx',
+    keyHint:     'sk-bf-…',
+    keyLabel:    'key',
+    // Headers: x-api-key + anthropic-version (Anthropic passthrough style)
+    headers: key => ({
+      'Content-Type':      'application/json',
+      'x-api-key':         key,
+      'anthropic-version': '2023-06-01',
+    }),
+  },
+  portkey:  {
+    label:       'Portkey',
+    urlHint:     'https://api.portkey.ai',
+    keyHint:     'pk-…',
+    keyLabel:    'key',
+    // Portkey uses x-portkey-api-key; virtual-key is optional (set in Portkey config)
+    headers: key => ({
+      'Content-Type':         'application/json',
+      'x-portkey-api-key':    key,
+      'anthropic-version':    '2023-06-01',
+    }),
+  },
+  litellm:  {
+    label:       'LiteLLM',
+    urlHint:     'https://litellm.xxx',
+    keyHint:     'sk-…',
+    keyLabel:    'key',
+    // LiteLLM proxy uses Bearer token
+    headers: key => ({
+      'Content-Type':      'application/json',
+      'Authorization':     `Bearer ${key}`,
+      'anthropic-version': '2023-06-01',
+    }),
+  },
+  helicone: {
+    label:       'Helicone',
+    urlHint:     'https://anthropic.helicone.ai',
+    keyHint:     'sk-ant-… (Anthropic key)',
+    keyLabel:    'ant-key',
+    // Helicone: pass Anthropic key as x-api-key, Helicone auth as separate header
+    // helicone-auth stored in search-input field (reused as secondary-key field)
+    headers: (key, heliconeKey) => ({
+      'Content-Type':      'application/json',
+      'x-api-key':         key,
+      'anthropic-version': '2023-06-01',
+      ...(heliconeKey ? { 'helicone-auth': `Bearer ${heliconeKey}` } : {}),
+    }),
+  },
+};
 
 const WEB_SEARCH_TOOL = {
   name: 'web_search',
@@ -36,8 +92,25 @@ chrome.storage.session.get(['bf_url', 'bf_key', 'bf_search'], ({ bf_url, bf_key,
   if (bf_search) searchInput.value = bf_search;
   if (!bf_url || !bf_key) autoFillFromConfig();
 });
-chrome.storage.local.get('bf_model', ({ bf_model }) => {
-  if (bf_model) el('model').value = bf_model;
+chrome.storage.local.get(['bf_model', 'bf_gateway'], ({ bf_model, bf_gateway }) => {
+  if (bf_model)  el('model').value   = bf_model;
+  if (bf_gateway && GATEWAYS[bf_gateway]) {
+    el('gateway').value = bf_gateway;
+    applyGatewayProfile(bf_gateway);
+  }
+});
+
+function applyGatewayProfile(gw) {
+  const p = GATEWAYS[gw] || GATEWAYS.bifrost;
+  urlInput.placeholder          = p.urlHint;
+  keyInput.placeholder          = p.keyHint;
+  el('key-label').textContent   = p.keyLabel;
+}
+
+el('gateway').addEventListener('change', () => {
+  const gw = el('gateway').value;
+  applyGatewayProfile(gw);
+  chrome.storage.local.set({ bf_gateway: gw });
 });
 
 async function autoFillFromConfig() {
@@ -69,6 +142,22 @@ async function autoFillFromConfig() {
   fill(searchInput, 'searxng_url', 'bf_search');
   if (cfg.bifrost_url || cfg.api_key) setStatus('config loaded', 'ok');
 }
+
+// ── Welcome message ───────────────────────────────────────────────────────────
+appendTurn('ai', `**Web AI Agent** — your browser-native security assistant powered by FortiCNAPP and Claude.
+
+**What I can do on any page you're browsing:**
+• 📄 **Read** — load the page into context so you can ask questions about it
+• **TL;DR** — summarise the page in 3–5 bullets with source links
+• 🛡 **Scan** — run a FortiCNAPP SCA + SAST scan on any code found on the page
+• 📋 **Compliance** — generate a FortiCNAPP compliance PDF report
+
+**Cloud security tools:**
+• 🚨 **CVE** — quick attack surface assessment: search any CVE (e.g. CVE-2021-44228) across your hosts and containers, ranked by internet exposure and host risk score
+• 🔍 **LQL — Saved queries** — run pre-built Lacework Query Language queries against your live FortiCNAPP tenant
+• ✨ **LQL — Generate** — describe what you want to find in plain English; I'll build and run the LQL query for you
+
+Type anything below to start a conversation.`);
 
 const saveSession = (key, input) => {
   const v = input.value.trim();
@@ -287,11 +376,10 @@ async function send(silent = false) {
   busy = true;
   el('send').disabled = true;
 
-  const headers = {
-    'Content-Type':      'application/json',
-    'x-api-key':         key,
-    'anthropic-version': '2023-06-01',
-  };
+  const gw      = el('gateway').value || 'bifrost';
+  const profile = GATEWAYS[gw] || GATEWAYS.bifrost;
+  // For Helicone, searchInput holds the Helicone auth key (secondary key)
+  const headers = profile.headers(key, gw === 'helicone' ? searchInput.value.trim() : undefined);
   let inputTk = 0, outputTk = 0;
 
   try {
@@ -827,6 +915,466 @@ async function runComplianceReport() {
 }
 
 el('comp-generate').addEventListener('click', runComplianceReport);
+
+// ── FortiCNAPP CVE Attack Surface ────────────────────────────────────────────
+
+let _lastCveData = null;
+
+el('cve-btn').addEventListener('click', () => {
+  const panel  = el('cve-panel');
+  const isOpen = panel.classList.contains('open');
+  panel.classList.toggle('open', !isOpen);
+  el('codesec-panel').classList.remove('open');
+  el('compliance-panel').classList.remove('open');
+  el('lql-panel').classList.remove('open');
+  if (!isOpen) el('cve-input').focus();
+});
+
+el('cve-close').addEventListener('click', () => el('cve-panel').classList.remove('open'));
+
+el('cve-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runCveSearch();
+});
+
+el('cve-search').addEventListener('click', runCveSearch);
+
+el('cve-analyse').addEventListener('click', () => {
+  if (!_lastCveData) return;
+  el('cve-panel').classList.remove('open');
+  const d       = _lastCveData;
+  const exposed = d.hosts.filter(h => h.host_exposed || h.container_exposed);
+  const prompt  = buildCveAnalysisPrompt(d);
+  history.push({ role: 'user', content: prompt });
+  appendTurn('user', `Analyse attack surface for ${d.cveId}`);
+  send(true);
+});
+
+function buildCveAnalysisPrompt(d) {
+  const lines = [
+    `FortiCNAPP vulnerability scan results for **${d.cveId}** (last ${d.period_days} days).`,
+    ``,
+    `Summary: ${d.total_affected} affected hosts | ${d.internet_exposed} internet-exposed | ${d.fixable} fixable | ${d.total_containers} containers`,
+    ``,
+    `Affected hosts (internet-exposed first):`,
+  ];
+
+  d.hosts.forEach((h, i) => {
+    const flags = [];
+    if (h.host_exposed)      flags.push('HOST-INTERNET-EXPOSED');
+    if (h.container_exposed) flags.push('CONTAINER-INTERNET-EXPOSED');
+    if (h.fix_available)     flags.push(`fixable→${h.fixed_version}`);
+    lines.push(
+      `${i + 1}. ${h.hostname}  [${h.severity}]  risk:${h.host_risk_score.toFixed(1)}` +
+      (flags.length ? `  ⚠ ${flags.join(' | ')}` : '') +
+      `  account:${h.account}  region:${h.region}`
+    );
+    h.packages.forEach(p => lines.push(`   pkg: ${p.name} ${p.version}`));
+    h.containers.forEach(c => lines.push(
+      `   container: ${c.name}  image:${c.image}` +
+      (c.internet_exposed ? '  🌐 INTERNET-EXPOSED' : '')
+    ));
+  });
+
+  lines.push(``, `Tasks:`);
+  lines.push(`1. Produce an ASCII architecture diagram showing affected hosts, their containers, trust boundaries (VPC / public internet), and which paths are internet-exposed (mark in red). Show CVE package on each affected node.`);
+  lines.push(`2. Rank the top 3 highest-risk hosts and explain why.`);
+  lines.push(`3. State the recommended remediation (patch to ${d.hosts.find(h => h.fix_available)?.fixed_version || 'fixed version'} where available).`);
+  lines.push(`4. Flag any internet-exposed containers running on vulnerable hosts as critical priority.`);
+
+  return lines.join('\n');
+}
+
+async function runCveSearch() {
+  const cveId = el('cve-input').value.trim().toUpperCase();
+  if (!cveId) return;
+
+  const btn       = el('cve-search');
+  const statusEl  = el('cve-status');
+  const resultsEl = el('cve-results');
+  const analyseBtn = el('cve-analyse');
+
+  btn.disabled         = true;
+  statusEl.textContent = 'searching…';
+  statusEl.className   = '';
+  resultsEl.innerHTML  = '';
+  analyseBtn.style.display = 'none';
+  _lastCveData = null;
+  setStatus(`CVE lookup: ${cveId}…`, 'busy');
+
+  try {
+    const res = await fetch('http://localhost:8765/lql/cve', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ cveId, days: Number(el('cve-days').value) }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    _lastCveData = data;
+
+    if (!data.hosts || !data.hosts.length) {
+      statusEl.textContent = data.note || 'No results';
+      statusEl.className   = '';
+      setStatus('—');
+      resultsEl.innerHTML  = `<div class="cve-summary">${data.note || 'No affected hosts found.'}</div>`;
+      return;
+    }
+
+    renderCveResults(data);
+
+    const exp = data.internet_exposed;
+    statusEl.textContent = `${data.total_affected} hosts  |  ${exp} internet-exposed  |  ${data.fixable} fixable`;
+    statusEl.className   = exp ? 'err' : 'ok';
+    setStatus(`${cveId}: ${data.total_affected} hosts (${exp} exposed)`, exp ? 'err' : 'ok');
+    analyseBtn.style.display = '';
+  } catch (e) {
+    statusEl.textContent = `✗ ${e.message}`;
+    statusEl.className   = 'err';
+    setStatus('CVE error', 'err');
+    resultsEl.innerHTML  = `<div class="cve-summary" style="color:var(--err)">${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderCveResults(data) {
+  const resultsEl = el('cve-results');
+  resultsEl.innerHTML = '';
+
+  const summary = document.createElement('div');
+  summary.className   = 'cve-summary';
+  summary.textContent = `${data.cveId} — ${data.total_affected} affected hosts over ${data.period_days} days`;
+  resultsEl.appendChild(summary);
+
+  const esc = s => String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+
+  data.hosts.forEach(h => {
+    const hostExposed = h.host_exposed || h.container_exposed;
+    const card = document.createElement('div');
+    card.className = `cve-host${hostExposed ? ' exposed' : ''}`;
+
+    // Header row
+    const hdr = document.createElement('div');
+    hdr.className = 'cve-host-header';
+
+    const name = document.createElement('span');
+    name.className   = 'cve-host-name';
+    name.textContent = h.hostname;
+    hdr.appendChild(name);
+
+    if (h.host_exposed) {
+      const b = document.createElement('span');
+      b.className = 'cve-badge internet';
+      b.textContent = '🌐 host exposed';
+      hdr.appendChild(b);
+    }
+    if (h.container_exposed) {
+      const b = document.createElement('span');
+      b.className = 'cve-badge container';
+      b.textContent = '📦 container exposed';
+      hdr.appendChild(b);
+    }
+    const sevBadge = document.createElement('span');
+    sevBadge.className = `cve-badge ${(h.severity || '').toLowerCase()}`;
+    sevBadge.textContent = h.severity;
+    hdr.appendChild(sevBadge);
+
+    const risk = document.createElement('span');
+    risk.className   = 'cve-risk';
+    risk.textContent = `risk ${h.host_risk_score.toFixed(1)}`;
+    hdr.appendChild(risk);
+    card.appendChild(hdr);
+
+    // Body
+    const body = document.createElement('div');
+    body.className = 'cve-host-body';
+
+    const addRow = (label, val, cls = '') => {
+      if (!val) return;
+      const row = document.createElement('div');
+      row.className = 'cve-row';
+      row.innerHTML =
+        `<span class="cve-label">${esc(label)}</span>` +
+        `<span class="cve-val${cls ? ' ' + cls : ''}">${esc(val)}</span>`;
+      body.appendChild(row);
+    };
+
+    addRow('account',  h.account);
+    addRow('region',   h.region);
+    const pkgStr = h.packages.map(p => `${p.name} ${p.version}`.trim()).join(', ');
+    addRow('packages', pkgStr);
+    if (h.fix_available) addRow('fix →', h.fixed_version || 'available', 'fix');
+
+    // Containers
+    if (h.containers.length) {
+      const cSection = document.createElement('div');
+      cSection.className = 'cve-containers';
+      h.containers.forEach(c => {
+        const row = document.createElement('div');
+        row.className = 'cve-row';
+        row.innerHTML =
+          `<span class="cve-label">container</span>` +
+          `<span class="cve-val">${esc(c.name)}` +
+          (c.image ? ` <span style="color:var(--dim)">(${esc(c.image)})</span>` : '') +
+          (c.internet_exposed ? ' <span class="cve-badge internet" style="margin-left:4px">🌐</span>' : '') +
+          `</span>`;
+        cSection.appendChild(row);
+      });
+      body.appendChild(cSection);
+    }
+
+    card.appendChild(body);
+    resultsEl.appendChild(card);
+  });
+}
+
+// ── FortiCNAPP LQL ───────────────────────────────────────────────────────────
+
+let _lqlQueries = [];
+
+el('lql').addEventListener('click', async () => {
+  const panel  = el('lql-panel');
+  const isOpen = panel.classList.contains('open');
+  panel.classList.toggle('open', !isOpen);
+  el('codesec-panel').classList.remove('open');
+  el('compliance-panel').classList.remove('open');
+  if (!isOpen) loadLqlQueries();
+});
+
+el('lql-close').addEventListener('click', () => {
+  el('lql-panel').classList.remove('open');
+});
+
+async function loadLqlQueries() {
+  const sel = el('lql-select');
+  sel.innerHTML = '<option value="">Loading…</option>';
+  sel.disabled  = true;
+  const statusEl = el('lql-status');
+  statusEl.textContent = '';
+  statusEl.className   = '';
+  try {
+    const res  = await fetch('http://localhost:8765/lql/queries');
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    _lqlQueries = data.queries || [];
+    if (!_lqlQueries.length) {
+      sel.innerHTML = '<option value="">No saved queries found</option>';
+      return;
+    }
+    sel.innerHTML = '<option value="">— select a query —</option>';
+    _lqlQueries.forEach((q, i) => {
+      const opt   = document.createElement('option');
+      opt.value   = String(i);
+      opt.textContent = q.id;
+      sel.appendChild(opt);
+    });
+    sel.disabled = false;
+  } catch (e) {
+    sel.innerHTML = `<option value="">Error: ${e.message}</option>`;
+  }
+}
+
+el('lql-run').addEventListener('click', async () => {
+  const idx = el('lql-select').value;
+  if (idx === '') return;
+  const query     = _lqlQueries[Number(idx)];
+  const btn       = el('lql-run');
+  const statusEl  = el('lql-status');
+  const resultsEl = el('lql-results');
+
+  btn.disabled         = true;
+  statusEl.textContent = 'running…';
+  statusEl.className   = '';
+  resultsEl.innerHTML  = '';
+  setStatus('running LQL…', 'busy');
+
+  try {
+    const res = await fetch('http://localhost:8765/lql/run', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ queryText: query.queryText }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const rows  = data.rows || [];
+    const count = data.count ?? rows.length;
+    const total = data.total ?? count;
+
+    statusEl.textContent = total > count
+      ? `${count} rows shown (${total} total)`
+      : `${count} row${count !== 1 ? 's' : ''}`;
+    statusEl.className = count ? 'ok' : '';
+    setStatus(`LQL: ${count} rows`, 'ok');
+
+    if (!rows.length) {
+      resultsEl.innerHTML = '<pre>No results.</pre>';
+      return;
+    }
+
+    // Render as a plain-text aligned table
+    const keys   = Object.keys(rows[0]);
+    const widths = Object.fromEntries(keys.map(k => [k, k.length]));
+    rows.forEach(r => keys.forEach(k => {
+      widths[k] = Math.max(widths[k], String(r[k] ?? '').length);
+    }));
+    const pad = (s, w) => String(s ?? '').padEnd(w);
+    const header = keys.map(k => pad(k, widths[k])).join('  ');
+    const sep    = keys.map(k => '-'.repeat(widths[k])).join('  ');
+    const body   = rows.slice(0, 200).map(r =>
+      keys.map(k => pad(r[k], widths[k])).join('  ')
+    ).join('\n');
+    const note = rows.length > 200 ? `\n… ${rows.length - 200} more rows` : '';
+
+    const pre = document.createElement('pre');
+    pre.textContent = `${header}\n${sep}\n${body}${note}`;
+    resultsEl.appendChild(pre);
+
+    // Also push a summary into chat context
+    history.push({
+      role: 'user',
+      content: `I ran LQL query "${query.id}" and got ${count} rows. Here are the results:\n\n${header}\n${sep}\n${body}${note}\n\nAnalyse these findings.`,
+    });
+    history.push({ role: 'assistant', content: 'Results loaded.' });
+    appendTurn('system', `🔍 LQL "${query.id}" — ${count} rows loaded into context`);
+  } catch (e) {
+    statusEl.textContent = `✗ ${e.message}`;
+    statusEl.className   = 'err';
+    setStatus('LQL error', 'err');
+    resultsEl.innerHTML  = `<pre style="color:var(--err)">${e.message}</pre>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── LQL tab switching ─────────────────────────────────────────────────────────
+
+document.querySelectorAll('.lql-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.lql-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.lql-pane').forEach(p => p.classList.remove('active'));
+    tab.classList.add('active');
+    el('lql-pane-' + tab.dataset.tab).classList.add('active');
+  });
+});
+
+// ── LQL Generate ─────────────────────────────────────────────────────────────
+
+let _genQueryText = '';
+
+el('lql-gen-btn').addEventListener('click', async () => {
+  const objective = el('lql-objective').value.trim();
+  if (!objective) return;
+
+  const btn      = el('lql-gen-btn');
+  const statusEl = el('lql-gen-status');
+  const preview  = el('lql-gen-preview');
+  const codeEl   = el('lql-gen-code');
+
+  btn.disabled         = true;
+  statusEl.textContent = 'building…';
+  statusEl.className   = '';
+  preview.style.display = 'none';
+  _genQueryText        = '';
+
+  try {
+    const res  = await fetch('http://localhost:8765/lql/generate', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ objective }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    _genQueryText         = data.queryText || '';
+    codeEl.textContent    = `-- ${data.queryId}\n\n${_genQueryText}`;
+    statusEl.textContent  = 'ready';
+    statusEl.className    = 'ok';
+    preview.style.display = '';
+    el('lql-gen-results').innerHTML = '';
+    el('lql-gen-run-status').textContent = '';
+  } catch (e) {
+    statusEl.textContent = `✗ ${e.message}`;
+    statusEl.className   = 'err';
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+el('lql-gen-run').addEventListener('click', async () => {
+  if (!_genQueryText) return;
+
+  const btn      = el('lql-gen-run');
+  const statusEl = el('lql-gen-run-status');
+  const resultsEl = el('lql-gen-results');
+
+  btn.disabled         = true;
+  statusEl.textContent = 'running…';
+  statusEl.className   = '';
+  resultsEl.innerHTML  = '';
+  setStatus('running LQL…', 'busy');
+
+  try {
+    const res  = await fetch('http://localhost:8765/lql/run', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ queryText: _genQueryText }),
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    const rows  = data.rows || [];
+    const count = data.count ?? rows.length;
+    const total = data.total ?? count;
+
+    statusEl.textContent = total > count
+      ? `${count} rows (${total} total)`
+      : `${count} row${count !== 1 ? 's' : ''}`;
+    statusEl.className = count ? 'ok' : '';
+    setStatus(`LQL: ${count} rows`, 'ok');
+
+    if (!rows.length) {
+      resultsEl.innerHTML = '<pre>No results.</pre>';
+      return;
+    }
+
+    const keys   = Object.keys(rows[0]);
+    const widths = Object.fromEntries(keys.map(k => [k, k.length]));
+    rows.forEach(r => keys.forEach(k => {
+      widths[k] = Math.max(widths[k], String(r[k] ?? '').length);
+    }));
+    const pad    = (s, w) => String(s ?? '').padEnd(w);
+    const header = keys.map(k => pad(k, widths[k])).join('  ');
+    const sep    = keys.map(k => '-'.repeat(widths[k])).join('  ');
+    const body   = rows.slice(0, 200).map(r =>
+      keys.map(k => pad(r[k], widths[k])).join('  ')
+    ).join('\n');
+    const note = rows.length > 200 ? `\n… ${rows.length - 200} more rows` : '';
+
+    const pre = document.createElement('pre');
+    pre.textContent = `${header}\n${sep}\n${body}${note}`;
+    resultsEl.appendChild(pre);
+
+    history.push({
+      role: 'user',
+      content: `I generated and ran an LQL query for "${el('lql-objective').value}" and got ${count} rows:\n\n${header}\n${sep}\n${body}${note}\n\nAnalyse these findings.`,
+    });
+    history.push({ role: 'assistant', content: 'Results loaded.' });
+    appendTurn('system', `✨ Generated LQL — ${count} rows loaded into context`);
+  } catch (e) {
+    statusEl.textContent = `✗ ${e.message}`;
+    statusEl.className   = 'err';
+    setStatus('LQL error', 'err');
+    resultsEl.innerHTML  = `<pre style="color:var(--err)">${e.message}</pre>`;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── enter key on objective input triggers build ────────────────────────────
+el('lql-objective').addEventListener('keydown', e => {
+  if (e.key === 'Enter') el('lql-gen-btn').click();
+});
 
 async function loadCompliancePdfText(reportName) {
   appendTurn('system', `📖 Loading "${reportName}" into context…`);

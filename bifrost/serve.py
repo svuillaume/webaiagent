@@ -7,14 +7,19 @@ Local proxy + static server for chatbox.html and the Chrome extension.
   POST /proxy/v1/*    → proxies to Bifrost upstream
   POST /codesec       → runs lacework SCA+SAST on submitted code snippet
   POST /sbom          → runs lacework SCA and returns CycloneDX SBOM JSON
+  GET  /lql/queries   → lists saved LQL YAML files from LQL_QUERIES_DIR
+  POST /lql/run       → executes an LQL query against the FortiCNAPP API
+  POST /lql/generate  → natural-language objective → LQL queryText via Claude
 
 Usage: python3 serve.py
        open http://localhost:8765
 
 SEARXNG_URL in .env overrides the default (http://localhost:8080).
+LQL_QUERIES_DIR in .env points to the lql_queries/ folder from the forticnapp-lql repo.
 The extension tries Docker SearXNG first; falls back here if Docker is not running.
 """
 import http.server, json, os, shutil, socketserver, subprocess, tempfile, urllib.parse, urllib.request, urllib.error
+from datetime import datetime, timezone, timedelta
 
 PORT      = 8765
 DIR       = os.path.dirname(os.path.abspath(__file__))
@@ -24,22 +29,22 @@ _last_compliance_pdf: dict = {}
 HTML_FILE = os.path.join(DIR, 'chatbox.html')
 
 def load_env():
+    env = dict(os.environ)  # start with real env vars (Docker, systemd, etc.)
     path = os.path.join(DIR, '.env')
-    env = {}
-    if not os.path.exists(path):
-        return env
-    with open(path) as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                k, _, v = line.partition('=')
-                env[k.strip()] = v.strip()
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith('#') and '=' in line:
+                    k, _, v = line.partition('=')
+                    env[k.strip()] = v.strip()  # .env overrides env vars if present
     return env
 
-env         = load_env()
-VIRTUAL_KEY = env.get('BIFROST_VIRTUAL_KEY', '')
-SEARXNG_URL = env.get('SEARXNG_URL', 'http://localhost:8080')
-UPSTREAM    = env.get('ANTHROPIC_BASE_URL', 'https://your-bifrost-endpoint/anthropic')
+env             = load_env()
+VIRTUAL_KEY     = env.get('BIFROST_VIRTUAL_KEY', '')
+SEARXNG_URL     = env.get('SEARXNG_URL', 'http://localhost:8080')
+UPSTREAM        = env.get('ANTHROPIC_BASE_URL', 'https://your-bifrost-endpoint/anthropic')
+LQL_QUERIES_DIR = env.get('LQL_QUERIES_DIR', '')
 
 CORS = {
     'Access-Control-Allow-Origin':  '*',
@@ -90,6 +95,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_compliance_list()
         elif self.path == '/compliance/latest-text':
             self.serve_compliance_text()
+        elif self.path == '/lql/queries':
+            self.serve_lql_queries()
         else:
             self.send_error(404)
 
@@ -100,6 +107,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_sbom()
         elif self.path == '/compliance':
             self.serve_compliance()
+        elif self.path == '/lql/run':
+            self.serve_lql_run()
+        elif self.path == '/lql/cve':
+            self.serve_lql_cve()
+        elif self.path == '/lql/generate':
+            self.serve_lql_generate()
         elif self.path.startswith('/proxy/'):
             self.proxy_upstream()
         else:
@@ -500,6 +513,355 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 'note':   'Install pdftotext (poppler-utils) for text extraction',
             }).encode())
 
+    def serve_lql_cve(self):
+        """Accept {cveId, days?}, return per-host attack surface for that CVE.
+
+        Correlates:
+          - Vulnerabilities/Hosts/search  → which hosts carry the CVE + host internet exposure
+          - Inventory/search (ec2:instance + container:workload) → container-level exposure
+        Returns hosts sorted by internet-exposed first, then host risk score descending.
+        """
+        try:
+            payload = json.loads(self._read_body())
+        except json.JSONDecodeError:
+            self.send_error(400, 'Expected JSON {cveId}')
+            return
+
+        cve_id = (payload.get('cveId') or '').strip().upper()
+        if not cve_id:
+            self.send_json(400, json.dumps({'error': 'cveId is required'}).encode())
+            return
+        days = int(payload.get('days', 7))
+
+        try:
+            token, base_url = self._lw_token()
+        except Exception as e:
+            self.send_json(503, json.dumps({'error': str(e)}).encode())
+            return
+
+        headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
+        now   = datetime.now(timezone.utc)
+        start = (now - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        def _post_api(path, body):
+            req  = urllib.request.Request(
+                f'{base_url}{path}', data=json.dumps(body).encode(),
+                method='POST', headers=headers)
+            try:
+                resp = urllib.request.urlopen(req, timeout=60)
+                raw  = resp.read()
+                return json.loads(raw) if raw.strip() else {}
+            except urllib.error.HTTPError as e:
+                err = e.read()
+                try:
+                    msg = json.loads(err).get('message', err.decode()[:400])
+                except Exception:
+                    msg = err.decode()[:400]
+                raise RuntimeError(f'{e.code}: {msg}')
+
+        # ── 1. Pull vuln records for this CVE (Critical + High) ──────────────
+        vuln_rows = []
+        for sev in ('Critical', 'High'):
+            try:
+                resp = _post_api('/api/v2/Vulnerabilities/Hosts/search', {
+                    'timeFilter': {'startTime': start, 'endTime': end},
+                    'filters': [
+                        {'field': 'status',   'expression': 'eq', 'value': 'Active'},
+                        {'field': 'severity', 'expression': 'eq', 'value': sev},
+                        {'field': 'vulnId',   'expression': 'eq', 'value': cve_id},
+                    ],
+                    'returns': ['vulnId', 'severity', 'status', 'cveRiskScore',
+                                'hostRiskScore', 'featureKey', 'fixInfo',
+                                'machineTags', 'mid', 'evalCtx'],
+                    'limit': 5000,
+                })
+                vuln_rows.extend(resp.get('data', []))
+            except RuntimeError:
+                pass  # severity tier may return 404 on tenants with no matches
+
+        if not vuln_rows:
+            self.send_json(200, json.dumps({
+                'cveId': cve_id, 'hosts': [], 'total_affected': 0,
+                'note': f'No active records for {cve_id} in the last {days} days.',
+            }).encode())
+            return
+
+        # ── 2. Aggregate per host ────────────────────────────────────────────
+        hosts = {}
+        for v in vuln_rows:
+            mid   = str(v.get('mid', 'unknown'))
+            tags  = v.get('machineTags') or {}
+            ctx   = v.get('evalCtx') or {}
+            fk    = v.get('featureKey') or {}
+            fi    = v.get('fixInfo') or {}
+
+            if mid not in hosts:
+                hosts[mid] = {
+                    'mid':              mid,
+                    'hostname':         tags.get('Hostname') or ctx.get('hostname') or mid,
+                    'account':          tags.get('Account') or tags.get('account') or '',
+                    'region':           tags.get('Region') or tags.get('region') or '',
+                    'host_exposed':     str(tags.get('lw_InternetExposure', '')).lower() == 'yes',
+                    'host_risk_score':  float(v.get('hostRiskScore') or 0),
+                    'cve_risk_score':   float(v.get('cveRiskScore') or 0),
+                    'severity':         v.get('severity', ''),
+                    'packages':         [],
+                    'fix_available':    str(fi.get('fix_available', '0')) == '1',
+                    'fixed_version':    fi.get('fixed_version') or '',
+                    'containers':       [],   # filled in step 3
+                    'container_exposed': False,
+                }
+            else:
+                hosts[mid]['host_risk_score'] = max(
+                    hosts[mid]['host_risk_score'], float(v.get('hostRiskScore') or 0))
+                if not hosts[mid]['fix_available']:
+                    hosts[mid]['fix_available'] = str(fi.get('fix_available', '0')) == '1'
+                    hosts[mid]['fixed_version']  = fi.get('fixed_version') or ''
+
+            pkg = fk.get('name') or ''
+            ver = fk.get('version') or ''
+            if pkg and pkg not in [p['name'] for p in hosts[mid]['packages']]:
+                hosts[mid]['packages'].append({'name': pkg, 'version': ver})
+
+        # ── 3. Pull containers for each affected mid ─────────────────────────
+        mids = list(hosts.keys())
+        # Batch: query containers for up to 20 mids at a time
+        BATCH = 20
+        for i in range(0, len(mids), BATCH):
+            batch = mids[i:i + BATCH]
+            try:
+                resp = _post_api('/api/v2/Inventory/search', {
+                    'csp': 'AWS',
+                    'filters': [{'field': 'resourceType', 'expression': 'eq',
+                                 'value': 'container:workload'}],
+                    'returns': ['urn', 'resourceType', 'resourceConfig',
+                                'resourceTags', 'resourceRegion', 'status'],
+                    'limit': 1000,
+                })
+                for item in resp.get('data', []):
+                    cfg  = item.get('resourceConfig') or {}
+                    itags = item.get('resourceTags') or {}
+                    # Match container to host by MID or hostname tag
+                    c_mid = str(itags.get('mid') or cfg.get('MID') or '')
+                    c_host = str(itags.get('Hostname') or cfg.get('Hostname') or '')
+                    matched_mid = None
+                    if c_mid in hosts:
+                        matched_mid = c_mid
+                    else:
+                        for m, h in hosts.items():
+                            if c_host and c_host == h['hostname']:
+                                matched_mid = m
+                                break
+                    if not matched_mid:
+                        continue
+                    name    = (cfg.get('ContainerName') or cfg.get('Name')
+                               or item.get('urn', '').split('/')[-1])
+                    image   = cfg.get('ImageName') or cfg.get('Image') or ''
+                    exposed = str(itags.get('lw_InternetExposure', '')).lower() == 'yes'
+                    hosts[matched_mid]['containers'].append({
+                        'name': name, 'image': image, 'internet_exposed': exposed,
+                    })
+                    if exposed:
+                        hosts[matched_mid]['container_exposed'] = True
+            except RuntimeError:
+                pass  # container inventory optional — don't fail the whole request
+
+        # ── 4. Sort: internet-exposed (host or container) first, then risk ───
+        sorted_hosts = sorted(
+            hosts.values(),
+            key=lambda h: (
+                0 if (h['host_exposed'] or h['container_exposed']) else 1,
+                -h['host_risk_score'],
+            )
+        )
+
+        exposed_count   = sum(1 for h in sorted_hosts if h['host_exposed'] or h['container_exposed'])
+        fixable_count   = sum(1 for h in sorted_hosts if h['fix_available'])
+        container_count = sum(len(h['containers']) for h in sorted_hosts)
+
+        self.send_json(200, json.dumps({
+            'cveId':           cve_id,
+            'period_days':     days,
+            'total_affected':  len(sorted_hosts),
+            'internet_exposed': exposed_count,
+            'fixable':         fixable_count,
+            'total_containers': container_count,
+            'hosts':           sorted_hosts,
+        }, default=str).encode())
+
+    def serve_lql_queries(self):
+        """Return a list of saved LQL YAML files from LQL_QUERIES_DIR."""
+        if not LQL_QUERIES_DIR or not os.path.isdir(LQL_QUERIES_DIR):
+            self.send_json(503, json.dumps({
+                'error': 'LQL_QUERIES_DIR not set or not found — add it to .env'
+            }).encode())
+            return
+        files = sorted(f for f in os.listdir(LQL_QUERIES_DIR) if f.endswith('.yaml'))
+        queries = []
+        for fname in files:
+            path = os.path.join(LQL_QUERIES_DIR, fname)
+            query_id, query_text = fname[:-5], ''
+            try:
+                with open(path) as f:
+                    raw = f.read()
+                # Extract queryId and queryText from the YAML (no external dep)
+                for line in raw.splitlines():
+                    if line.startswith('queryId:'):
+                        query_id = line.split(':', 1)[1].strip()
+                        break
+                # Extract the LQL block after "queryText: |-"
+                lines = raw.splitlines()
+                in_block, block_indent = False, 0
+                lql_lines = []
+                for line in lines:
+                    if not in_block and line.strip().startswith('queryText:'):
+                        in_block = True
+                        continue
+                    if in_block:
+                        if not line.strip():
+                            lql_lines.append('')
+                            continue
+                        indent = len(line) - len(line.lstrip())
+                        if block_indent == 0:
+                            block_indent = indent
+                        if indent >= block_indent:
+                            lql_lines.append(line[block_indent:])
+                        else:
+                            break
+                query_text = '\n'.join(lql_lines).strip()
+            except Exception:
+                pass
+            queries.append({'id': query_id, 'filename': fname, 'queryText': query_text})
+        self.send_json(200, json.dumps({'queries': queries}).encode())
+
+    def serve_lql_generate(self):
+        """Accept {objective}, call Claude via Bifrost, return {queryText, queryId}."""
+        try:
+            payload = json.loads(self._read_body())
+        except json.JSONDecodeError:
+            self.send_error(400, 'Expected JSON {objective}')
+            return
+
+        objective = (payload.get('objective') or '').strip()
+        if not objective:
+            self.send_json(400, json.dumps({'error': 'objective is required'}).encode())
+            return
+
+        if not UPSTREAM or not VIRTUAL_KEY:
+            self.send_json(503, json.dumps({'error': 'Bifrost URL or virtual key not configured'}).encode())
+            return
+
+        system_prompt = """\
+You are a FortiCNAPP LQL expert. Generate a single valid LQL query for the given objective.
+
+Rules:
+- Use ONLY these valid datasources: LW_CFG_AWS_S3, LW_CFG_AWS_S3_GET_BUCKET_ENCRYPTION, LW_CFG_AWS_S3_GET_BUCKET_POLICY, LW_CFG_AWS_EC2_INSTANCES, LW_CFG_AWS_EC2_SECURITY_GROUPS, LW_CFG_AWS_EC2_VPCS, LW_CFG_AWS_CLOUDTRAIL, LW_CFG_AWS_IAM_USERS, LW_CFG_AWS_IAM_USERS_GET_CREDENTIAL_REPORT, LW_CFG_AWS_IAM_USERS_LIST_POLICIES, LW_CFG_AWS_KMS_KEYS, LW_CFG_AWS_EC2_EBS_ENCRYPTION_BY_DEFAULT, LW_HE_PROCESSES, LW_HE_MACHINES, LW_HE_IMAGES, LW_HE_CONTAINERS, CloudTrailRawEvents
+- NEVER use CONTAINS() — use LIKE '%value%' instead
+- RLIKE is keyword form only: FIELD RLIKE 'pattern' (not RLIKE(field, pattern))
+- LW_HE_PROCESSES fields: MID, EXE_PATH, CMDLINE, USERNAME — NO HOSTNAME field
+- LW_CFG_AWS_EC2_INSTANCES tags field is RESOURCE_TAGS — NOT TAGS
+- LW_HE_CONTAINERS fields: MID, CONTAINER_NAME, CONTAINER_ID only
+- No multi-source joins unless using WITH ... ON '(default)' syntax
+- JSON path access: FIELD:json.key — cast with ::String, ::Number
+- Expand JSON arrays: array_to_rows(alias.FIELD:array) as (colname)
+- Standard compliance return columns: ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, RESOURCE_TYPE, SERVICE, 'reason' as COMPLIANCE_FAILURE_REASON
+- For LW_HE_* datasources omit ARN/SERVICE/RESOURCE_TYPE and return MID plus relevant fields
+- queryId format: Custom_<Cloud>_<Service>_<PascalCaseDescription>
+
+Respond with ONLY a JSON object, no markdown, no explanation:
+{"queryId": "Custom_...", "queryText": "{ source { ... } filter { ... } return distinct { ... } }"}"""
+
+        messages = [{'role': 'user', 'content': f'Objective: {objective}'}]
+        req_body = json.dumps({
+            'model': 'claude-haiku-4-5',
+            'max_tokens': 1024,
+            'system': system_prompt,
+            'messages': messages,
+        }).encode()
+
+        api_url = UPSTREAM.rstrip('/') + '/v1/messages'
+        req = urllib.request.Request(
+            api_url, data=req_body, method='POST',
+            headers={
+                'Content-Type': 'application/json',
+                'x-api-key': VIRTUAL_KEY,
+                'anthropic-version': '2023-06-01',
+            },
+        )
+        try:
+            resp      = urllib.request.urlopen(req, timeout=30)
+            resp_data = json.loads(resp.read())
+            raw       = resp_data['content'][0]['text'].strip()
+            # Strip markdown code fences if model wrapped anyway
+            if raw.startswith('```'):
+                raw = '\n'.join(raw.split('\n')[1:])
+                if raw.endswith('```'):
+                    raw = raw[:-3].strip()
+            result = json.loads(raw)
+            self.send_json(200, json.dumps(result).encode())
+        except urllib.error.HTTPError as e:
+            err_body = e.read()
+            try:
+                msg = json.loads(err_body).get('error', {}).get('message', err_body.decode()[:400])
+            except Exception:
+                msg = err_body.decode()[:400]
+            self.send_json(e.code, json.dumps({'error': msg}).encode())
+        except Exception as e:
+            self.send_json(500, json.dumps({'error': str(e)}).encode())
+
+    def serve_lql_run(self):
+        """Accept {queryText, startTime?, endTime?}, execute against FortiCNAPP, return rows."""
+        try:
+            payload = json.loads(self._read_body())
+        except json.JSONDecodeError:
+            self.send_error(400, 'Expected JSON {queryText}')
+            return
+
+        query_text = (payload.get('queryText') or '').strip()
+        if not query_text:
+            self.send_json(400, json.dumps({'error': 'queryText is required'}).encode())
+            return
+
+        try:
+            token, base_url = self._lw_token()
+        except Exception as e:
+            self.send_json(503, json.dumps({'error': str(e)}).encode())
+            return
+
+        now   = datetime.now(timezone.utc)
+        start = payload.get('startTime') or (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        end   = payload.get('endTime')   or now.strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        body = json.dumps({
+            'query': {'queryText': query_text},
+            'arguments': [
+                {'name': 'StartTimeRange', 'value': start},
+                {'name': 'EndTimeRange',   'value': end},
+            ],
+        }).encode()
+        req = urllib.request.Request(
+            f'{base_url}/api/v2/Queries/execute',
+            data=body, method='POST',
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=60)
+            data = json.loads(resp.read())
+            rows  = data.get('data', [])
+            total = data.get('paging', {}).get('totalRows', len(rows))
+            self.send_json(200, json.dumps({
+                'rows': rows, 'count': len(rows), 'total': total,
+                'startTime': start, 'endTime': end,
+            }).encode())
+        except urllib.error.HTTPError as e:
+            err_body = e.read()
+            try:
+                msg = json.loads(err_body).get('message', err_body.decode()[:500])
+            except Exception:
+                msg = err_body.decode()[:500]
+            self.send_json(e.code, json.dumps({'error': msg}).encode())
+
     def log_message(self, fmt, *args):
         print(f'  {self.address_string()} {fmt % args}')
 
@@ -513,6 +875,9 @@ print(f'Search proxy     →  /search?q=... → {SEARXNG_URL}')
 print(f'CodeSec scan     →  POST /codesec     {"(lacework CLI ready)" if LW_AVAILABLE else "(WARNING: lacework CLI not found)"}')
 print(f'SBOM export      →  POST /sbom        {"(lacework CLI ready)" if LW_AVAILABLE else "(WARNING: lacework CLI not found)"}')
 print(f'Compliance PDF   →  POST /compliance  {"(lacework CLI ready)" if LW_AVAILABLE else "(WARNING: lacework CLI not found)"}')
+print(f'LQL queries      →  GET  /lql/queries  {"(" + LQL_QUERIES_DIR + ")" if LQL_QUERIES_DIR else "(WARNING: LQL_QUERIES_DIR not set in .env)"}')
+print(f'LQL run          →  POST /lql/run')
+print(f'LQL generate     →  POST /lql/generate')
 
 socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(('', PORT), Handler) as httpd:

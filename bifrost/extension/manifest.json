@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Bifrost Chat",
-  "version": "1.8",
+  "name": "Web AI Agent",
+  "version": "2.0",
   "description": "Secure AI chat side panel for the Bifrost AI Gateway",
   "permissions": ["storage", "sidePanel", "tabs", "activeTab", "scripting"],
   "host_permissions": ["https://*/*", "http://localhost/*"],
@@ -11,7 +11,7 @@
   "web_accessible_resources": [{ "resources": ["config.json"], "matches": ["<all_urls>"] }],
   "background": { "service_worker": "background.js" },
   "action": {
-    "default_title": "Bifrost Chat",
+    "default_title": "Web AI Agent",
     "default_icon": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
   },
   "side_panel": { "default_path": "panel.html" },

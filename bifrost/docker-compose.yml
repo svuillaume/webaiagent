@@ -20,6 +20,7 @@ services:
       - ~/.lacework.toml:/root/.lacework.toml:ro
       # Mount lacework components cache to avoid re-downloading every start
       - ~/.config/lacework:/root/.config/lacework
+      - ~/claude_cnapp/lql/lql_queries:/lql_queries:ro
     depends_on:
       - searxng
     restart: unless-stopped
