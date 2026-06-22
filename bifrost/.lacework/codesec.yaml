@@ -1,4 +1,4 @@
-#Optional - only if you are running LW CodeScan
+#Optional - only if you are running LW CodeScan and venv 
 default:
   sca:
     enabled: true
