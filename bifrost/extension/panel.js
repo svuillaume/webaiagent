@@ -68,15 +68,22 @@ searchInput.addEventListener('change',() => storeSession('bf_search', searchInpu
 el('model').addEventListener('change',() => chrome.storage.local.set({ bf_model: el('model').value }));
 
 // ── SearXNG search ────────────────────────────────────────────────────────
-// Routes through local SearXNG container at localhost:8080 to avoid CORS blocks
+// Tries Docker SearXNG (localhost:8080) first, falls back to serve.py proxy
+// (localhost:8765/search) for environments without Docker.
 async function webSearch(query) {
-  const base = searchInput.value.trim().replace(/\/+$/, '');
-  if (!base) return 'Web search not configured.';
-  const res = await fetch(
-    `${base}/search?q=${encodeURIComponent(query)}&format=json&language=en`,
-    { signal: AbortSignal.timeout(8000) }
-  );
-  if (!res.ok) throw new Error(`SearXNG returned ${res.status}`);
+  const q          = encodeURIComponent(query);
+  const dockerUrl  = `http://localhost:8080/search?q=${q}&format=json&language=en`;
+  const proxyUrl   = `http://localhost:8765/search?q=${q}`;
+
+  let res;
+  try {
+    res = await fetch(dockerUrl, { signal: AbortSignal.timeout(4000) });
+  } catch {
+    // Docker not running — fall back to serve.py proxy
+    res = await fetch(proxyUrl, { signal: AbortSignal.timeout(8000) });
+  }
+
+  if (!res.ok) throw new Error(`Search returned ${res.status}`);
   const { results = [] } = await res.json();
   if (!results.length) return 'No results found.';
   return results.slice(0, 5)
@@ -203,7 +210,7 @@ el('tldr').addEventListener('click', async () => {
     const page = await readCurrentPage();
     history.push({ role: 'user',      content: `[Page context]\nTitle: ${page.title}\nURL: ${page.url}\n\n${page.text}` });
     history.push({ role: 'assistant', content: 'Page loaded.' });
-    history.push({ role: 'user',      content: 'Give me a TL;DR summary of this page in 3-5 bullet points.' });
+    history.push({ role: 'user',      content: 'Give me a TL;DR summary of this page in 3-5 bullet points. Each bullet must end with a clickable markdown hyperlink to the most relevant source URL (use the page URL or any referenced URL from the content).' });
     appendTurn('system', `📄 TL;DR — "${page.title}"`);
     el('read-page').classList.add('active');
     await send(true);

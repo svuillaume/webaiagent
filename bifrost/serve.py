@@ -2,11 +2,15 @@
 """
 Local proxy + static server for chatbox.html and the Chrome extension.
 - GET  /config        → returns Bifrost URL + key as JSON
+- GET  /search?q=...  → proxies web search to SearXNG (CORS bypass for the extension)
 - POST /proxy/v1/*    → proxies to Bifrost (bypasses CORS for chatbox.html)
 - GET  /              → serves chatbox.html
 
 Usage: python3 serve.py
        open http://localhost:8765
+
+Web search: set SEARXNG_URL in .env (default: http://localhost:8080).
+The extension tries Docker SearXNG first; falls back to this proxy if Docker is not running.
 """
 import http.server, json, os, socketserver, urllib.parse, urllib.request, urllib.error
 
@@ -28,6 +32,7 @@ def load_env():
 
 env         = load_env()
 VIRTUAL_KEY = env.get('BIFROST_VIRTUAL_KEY', '')
+SEARXNG_URL = env.get('SEARXNG_URL', 'http://localhost:8080')
 
 CORS_HEADERS = {
     'Access-Control-Allow-Origin':  '*',
@@ -62,8 +67,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_html()
         elif self.path == '/config':
             self.serve_config()
+        elif self.path.startswith('/search'):
+            self.serve_search()
         else:
             self.send_error(404)
+
+    def serve_search(self):
+        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        query  = params.get('q', [''])[0]
+        if not query:
+            self.send_error(400, 'Missing q parameter')
+            return
+        url = f"{SEARXNG_URL}/search?q={urllib.parse.quote(query)}&format=json&language=en"
+        try:
+            req  = urllib.request.Request(url, headers={'User-Agent': 'BifrostChat/1.0'})
+            resp = urllib.request.urlopen(req, timeout=10)
+            body = resp.read()
+            self.send_response(200)
+            for k, v in CORS_HEADERS.items():
+                self.send_header(k, v)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except urllib.error.HTTPError as e:
+            self.send_error(e.code, str(e))
 
     def serve_config(self):
         payload = json.dumps({
@@ -129,6 +157,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 print(f"Bifrost chatbox  →  http://localhost:{PORT}")
 print(f"Virtual key      →  {'loaded (' + VIRTUAL_KEY[:12] + '…)' if VIRTUAL_KEY else 'MISSING — edit .env'}")
 print(f"Proxy route      →  /proxy/v1/messages → {UPSTREAM}/v1/messages")
+print(f"Search proxy     →  /search?q=... → {SEARXNG_URL}")
 
 with socketserver.TCPServer(('', PORT), Handler) as httpd:
     httpd.serve_forever()

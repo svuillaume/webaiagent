@@ -6,7 +6,7 @@
   "permissions": ["storage", "sidePanel", "tabs", "activeTab", "scripting"],
   "host_permissions": ["https://*/*", "http://localhost/*"],
   "content_security_policy": {
-    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https: http://localhost:8080; img-src 'self' data:"
+    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https: http://localhost:8080 http://localhost:8765; img-src 'self' data:"
   },
   "web_accessible_resources": [{ "resources": ["config.json"], "matches": ["<all_urls>"] }],
   "background": { "service_worker": "background.js" },
