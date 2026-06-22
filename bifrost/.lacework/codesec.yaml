@@ -1,0 +1,6 @@
+default:
+  sca:
+    enabled: true
+    scan:
+      exclude:
+        - ".venv/**"
