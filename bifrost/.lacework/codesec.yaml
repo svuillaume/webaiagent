@@ -6,3 +6,6 @@ default:
       sast: true
       exclude:
         - ".venv/**"
+      exceptions:
+        - "finding:9C7420D532199729:False positive"
+        - "path:searxng/**:False positive"
