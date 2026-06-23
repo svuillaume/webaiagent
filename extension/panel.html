@@ -813,11 +813,12 @@ a.ext-link:hover { color: var(--accent-d); }
   background: var(--surface2);
   border-radius: 0 0 10px 10px;
 }
-/* AI bubble copy btn stays absolute bottom-right inside the bubble */
+/* AI bubble copy btn — sits below the bubble */
+.turn-ai .bubble-col .rc-copy-btn,
 .turn-ai .content .rc-copy-btn {
-  position: absolute;
-  bottom: 6px;
-  right: 8px;
+  display: block;
+  margin-top: 4px;
+  align-self: flex-start;
 }
 .cs-result-body, .cve-result-body, .lql-result-body {
   padding: 8px 12px;

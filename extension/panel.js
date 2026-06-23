@@ -277,6 +277,18 @@ document.querySelectorAll('.log-tab').forEach(tab => {
   });
 });
 
+function makeCopyBtn(getText) {
+  const btn = Object.assign(document.createElement('button'), {
+    className: 'rc-copy-btn', textContent: '⎘ Copy', title: 'Copy response',
+  });
+  btn.addEventListener('click', () => {
+    navigator.clipboard.writeText(typeof getText === 'function' ? getText() : getText);
+    btn.textContent = '✓ Copied';
+    setTimeout(() => { btn.textContent = '⎘ Copy'; }, 1500);
+  });
+  return btn;
+}
+
 function appendTurn(role, text = '') {
   const turn = Object.assign(document.createElement('div'), {
     className: `turn turn-${role}`,
@@ -315,15 +327,22 @@ function appendTurn(role, text = '') {
 
   // ai turn: body is live-updated during streaming — keep a reference in both panes
   if (role === 'ai') {
-    const bodyClone  = Object.assign(document.createElement('div'), { className: 'content' });
-    const colClone   = Object.assign(document.createElement('div'), { className: 'bubble-col' });
-    const lblClone   = Object.assign(document.createElement('div'), { className: 'turn-label', textContent: 'Web AI Agent' });
+    const bodyClone   = Object.assign(document.createElement('div'), { className: 'content' });
+    const colClone    = Object.assign(document.createElement('div'), { className: 'bubble-col' });
+    const lblClone    = Object.assign(document.createElement('div'), { className: 'turn-label', textContent: 'Web AI Agent' });
     const avatarClone = Object.assign(document.createElement('div'), { className: 'role ai', textContent: 'AI' });
-    const turnClone  = Object.assign(document.createElement('div'), { className: 'turn turn-ai' });
+    const turnClone   = Object.assign(document.createElement('div'), { className: 'turn turn-ai' });
 
     col.append(lbl, body);
     colClone.append(lblClone, bodyClone);
     turnClone.append(avatarClone, colClone);
+
+    // Static text (greeting, page-loaded, etc.) — add copy button immediately
+    if (text) {
+      const btn = makeCopyBtn(text);
+      col.appendChild(btn);
+      colClone.appendChild(makeCopyBtn(text));
+    }
 
     el('log-latest').appendChild(turn);
     el('log-all').appendChild(turnClone);
@@ -546,16 +565,8 @@ async function send(silent = false) {
       const node = document.createElement('span');
       setRendered(node, renderMarkdown(out));
       bubble.appendChild(node);
-      const copyBtn = Object.assign(document.createElement('button'), {
-        className: 'rc-copy-btn', textContent: '⎘ Copy', title: 'Copy response',
-      });
-      copyBtn.addEventListener('click', () => {
-        navigator.clipboard.writeText(out);
-        copyBtn.textContent = '✓ Copied';
-        setTimeout(() => { copyBtn.textContent = '⎘ Copy'; }, 1500);
-      });
-      bubble.appendChild(copyBtn);
-      if (bubble._allBody) bubble._allBody.appendChild(copyBtn.cloneNode(true));
+      bubble.appendChild(makeCopyBtn(out));
+      if (bubble._allBody) bubble._allBody.appendChild(makeCopyBtn(out));
     }
     history.push({ role: 'assistant', content: out });
     setStatus('ok', 'ok');
