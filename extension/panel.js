@@ -1,9 +1,9 @@
 'use strict';
 
 // ── Constants ─────────────────────────────────────────────────────────────
-const MAX_TOKENS     = 512;
+const MAX_TOKENS     = 4096;
 const PAGE_MAX_CHARS = 12000;
-const SYSTEM_PROMPT  = 'Be concise. Answer in 1-3 sentences unless more detail is clearly needed. No filler phrases.';
+const SYSTEM_PROMPT  = 'Be concise. No filler phrases.';
 const ROLE_LABELS    = { user: 'you', ai: 'ai', system: 'sys' };
 
 // ── Gateway profiles ──────────────────────────────────────────────────────
@@ -432,13 +432,23 @@ async function send(silent = false) {
           toolResults.push({ type: 'tool_result', tool_use_id: tc.id, content: result });
         }
         history.push({ role: 'user', content: toolResults });
-        bubble.innerHTML = '';
+        // Keep any text already rendered; append a search-status marker then continue streaming
+        const marker = document.createElement('span');
+        marker.className = 'search-marker';
+        marker.textContent = ' [searching…] ';
+        bubble.appendChild(marker);
         bubble.appendChild(cursor);
         continue;
       }
 
       cursor.remove();
-      setRendered(bubble, renderMarkdown(out));
+      // Remove any search-marker spans, then append the final answer after them
+      bubble.querySelectorAll('.search-marker').forEach(n => n.remove());
+      if (out) {
+        const finalNode = document.createElement('span');
+        setRendered(finalNode, renderMarkdown(out));
+        bubble.appendChild(finalNode);
+      }
       history.push({ role: 'assistant', content: out });
       setStatus('ok', 'ok');
       el('token-info').textContent = `in:${inputTk} out:${outputTk}`;
