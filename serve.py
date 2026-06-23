@@ -773,7 +773,7 @@ Set:             FIELD IN (v1, v2)  /  FIELD NOT IN (v1, v2)
 Range:           FIELD BETWEEN v1 AND v2
 Logic:           AND  OR  NOT
 CASE:            CASE WHEN cond THEN val ELSE other END
-Cast:            FIELD:json.nested.key::String   — types: String, Number, Boolean
+Cast:            FIELD:json.nested.key::String   — types: String, Number  (Boolean cast is UNSUPPORTED — compare against 'true'/'false' strings instead)
 
 CRITICAL RULES — violations cause parse errors:
 - NEVER use array wildcard syntax [*] or [0] — LQL does NOT support array indexing in filters
@@ -811,7 +811,7 @@ Identity & Access:
   LW_CFG_AWS_IAM_POLICIES                     — IAM managed policies
   LW_CFG_AWS_IAM_GROUPS                       — IAM groups
   LW_CFG_AWS_IAM_MFA_DEVICES                  — virtual MFA devices
-  LW_CFG_AWS_IAM_ACCOUNT_PASSWORD_POLICY      — account password policy; RESOURCE_CONFIG:MinimumPasswordLength::Number, RequireUppercaseCharacters::Boolean, MaxPasswordAge::Number, etc.
+  LW_CFG_AWS_IAM_ACCOUNT_PASSWORD_POLICY      — account password policy; RESOURCE_CONFIG:MinimumPasswordLength::Number, RequireUppercaseCharacters = 'true'/'false', MaxPasswordAge::Number, etc.
   LW_CFG_AWS_IAM_ACCOUNT_SUMMARY              — account-level IAM summary counts
   LW_CFG_AWS_IAM_GET_ACCESS_KEY_LAST_USED     — per-key last-used date
 
@@ -820,12 +820,12 @@ Compute — EC2:
   LW_CFG_AWS_EC2_SECURITY_GROUPS              — security groups; RESOURCE_CONFIG:IpPermissions and IpPermissionsEgress contain arrays of rules — DO NOT use [*] to query them; use array_to_rows()
   LW_CFG_AWS_EC2_VPCS                         — VPCs
   LW_CFG_AWS_EC2_SUBNETS                      — subnets
-  LW_CFG_AWS_EC2_VOLUMES                      — EBS volumes; RESOURCE_CONFIG:Encrypted::Boolean, RESOURCE_CONFIG:State::String, RESOURCE_CONFIG:VolumeType::String
-  LW_CFG_AWS_EC2_EBS_ENCRYPTION_BY_DEFAULT    — EBS default encryption per region; RESOURCE_CONFIG:ebsEncryptionByDefault::Boolean
+  LW_CFG_AWS_EC2_VOLUMES                      — EBS volumes; RESOURCE_CONFIG:Encrypted = 'true'/'false', RESOURCE_CONFIG:State::String, RESOURCE_CONFIG:VolumeType::String
+  LW_CFG_AWS_EC2_EBS_ENCRYPTION_BY_DEFAULT    — EBS default encryption per region; RESOURCE_CONFIG:ebsEncryptionByDefault = 'true'/'false'
   LW_CFG_AWS_EC2_NETWORK_ACLS                 — Network ACLs
   LW_CFG_AWS_EC2_VPC_FLOW_LOGS               — VPC flow log configs
   LW_CFG_AWS_EC2_INTERNET_GATEWAYS            — internet gateways
-  LW_CFG_AWS_EC2_SNAPSHOTS                    — EBS snapshots; RESOURCE_CONFIG:Encrypted::Boolean
+  LW_CFG_AWS_EC2_SNAPSHOTS                    — EBS snapshots; RESOURCE_CONFIG:Encrypted = 'true'/'false'
   LW_CFG_AWS_EC2_IMAGES                       — AMIs
   LW_CFG_AWS_EC2_KEY_PAIRS                    — EC2 key pairs
 
@@ -848,7 +848,7 @@ Storage:
   LW_CFG_AWS_S3_GET_BUCKET_VERSIONING        — S3 versioning; RESOURCE_CONFIG:Status::String ('Enabled' or 'Suspended')
   LW_CFG_AWS_S3_GET_PUBLIC_ACCESS_BLOCK      — per-bucket public access block settings
   LW_CFG_AWS_S3CONTROL_GET_PUBLIC_ACCESS_BLOCK — account-level S3 public access block
-  LW_CFG_AWS_RDS_DB_INSTANCES                 — RDS instances; RESOURCE_CONFIG:StorageEncrypted::Boolean, MultiAZ::Boolean, PubliclyAccessible::Boolean
+  LW_CFG_AWS_RDS_DB_INSTANCES                 — RDS instances; RESOURCE_CONFIG:StorageEncrypted = 'true'/'false', MultiAZ = 'true'/'false', PubliclyAccessible = 'true'/'false'
   LW_CFG_AWS_RDS_CLUSTERS                     — RDS Aurora clusters
   LW_CFG_AWS_RDS_DB_SNAPSHOTS                 — RDS snapshots
   LW_CFG_AWS_DYNAMODB_TABLES                  — DynamoDB tables
@@ -856,13 +856,13 @@ Storage:
 Encryption & Secrets:
   LW_CFG_AWS_KMS_KEYS                         — KMS key list
   LW_CFG_AWS_KMS_KEYS_DESCRIBE_KEY            — KMS key details; RESOURCE_CONFIG:KeyState::String, KeyManager::String ('AWS' or 'CUSTOMER'), KeyUsage::String
-  LW_CFG_AWS_KMS_KEYS_GET_ROTATION_STATUS     — KMS rotation; RESOURCE_CONFIG:keyRotationEnabled::Boolean
+  LW_CFG_AWS_KMS_KEYS_GET_ROTATION_STATUS     — KMS rotation; RESOURCE_CONFIG:keyRotationEnabled = 'true'/'false'
   LW_CFG_AWS_KMS_ALIASES                      — KMS aliases
   LW_CFG_AWS_SECRETSMANAGER_SECRETS           — Secrets Manager; top-level: NAME, DESCRIPTION, ROTATION_ENABLED, LAST_ROTATED_DATE
   LW_CFG_AWS_SSM_PARAMETERS                   — SSM Parameter Store; top-level: NAME, TYPE, DESCRIPTION (TYPE='SecureString' = encrypted)
 
 Security & Audit:
-  LW_CFG_AWS_CLOUDTRAIL                       — CloudTrail trails; RESOURCE_CONFIG:IsMultiRegionTrail::Boolean, LogFileValidationEnabled::Boolean
+  LW_CFG_AWS_CLOUDTRAIL                       — CloudTrail trails; RESOURCE_CONFIG:IsMultiRegionTrail = 'true'/'false', LogFileValidationEnabled = 'true'/'false'
   LW_CFG_AWS_CLOUDTRAIL_GET_EVENT_SELECTORS   — CloudTrail event selector config
   LW_CFG_AWS_CLOUDWATCH                       — CloudWatch alarms
   LW_CFG_AWS_GUARDDUTY_FINDINGS               — GuardDuty findings
@@ -914,16 +914,16 @@ Standard return: MID, HOSTNAME (via join or TAGS:Hostname::String), plus relevan
 ━━ EXAMPLES ━━
 
 EC2 instances with unencrypted EBS volumes — use LW_CFG_AWS_EC2_VOLUMES (not EC2_INSTANCES with array indexing):
-{"queryId":"Custom_AWS_EC2_UnencryptedVolumes","queryText":"{ source { LW_CFG_AWS_EC2_VOLUMES } filter { RESOURCE_CONFIG:Encrypted::Boolean = false AND RESOURCE_CONFIG:State::String = 'in-use' } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, RESOURCE_TYPE, SERVICE, 'EBS volume is not encrypted' as COMPLIANCE_FAILURE_REASON } }"}
+{"queryId":"Custom_AWS_EC2_UnencryptedVolumes","queryText":"{ source { LW_CFG_AWS_EC2_VOLUMES } filter { RESOURCE_CONFIG:Encrypted = 'false' AND RESOURCE_CONFIG:State = 'in-use' } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, RESOURCE_TYPE, SERVICE, 'EBS volume is not encrypted' as COMPLIANCE_FAILURE_REASON } }"}
 
 Regions without EBS encryption-by-default:
-{"queryId":"Custom_AWS_EC2_NoEBSDefaultEncryption","queryText":"{ source { LW_CFG_AWS_EC2_EBS_ENCRYPTION_BY_DEFAULT } filter { RESOURCE_CONFIG:ebsEncryptionByDefault::Boolean = false } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, RESOURCE_REGION, 'EBS encryption by default is disabled' as COMPLIANCE_FAILURE_REASON } }"}
+{"queryId":"Custom_AWS_EC2_NoEBSDefaultEncryption","queryText":"{ source { LW_CFG_AWS_EC2_EBS_ENCRYPTION_BY_DEFAULT } filter { RESOURCE_CONFIG:ebsEncryptionByDefault = 'false' } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, RESOURCE_REGION, 'EBS encryption by default is disabled' as COMPLIANCE_FAILURE_REASON } }"}
 
 IAM users with password login but no MFA:
 {"queryId":"Custom_AWS_IAM_UsersNoMFA","queryText":"{ source { LW_CFG_AWS_IAM_USERS_GET_CREDENTIAL_REPORT } filter { MFA_ACTIVE = false AND PASSWORD_ENABLED = true } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, USERNAME, PASSWORD_LAST_USED, 'Password login without MFA' as COMPLIANCE_FAILURE_REASON } }"}
 
 KMS customer keys without rotation:
-{"queryId":"Custom_AWS_KMS_NoRotation","queryText":"{ source { LW_CFG_AWS_KMS_KEYS_GET_ROTATION_STATUS } filter { RESOURCE_CONFIG:keyRotationEnabled::Boolean = false } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, 'KMS key rotation not enabled' as COMPLIANCE_FAILURE_REASON } }"}
+{"queryId":"Custom_AWS_KMS_NoRotation","queryText":"{ source { LW_CFG_AWS_KMS_KEYS_GET_ROTATION_STATUS } filter { RESOURCE_CONFIG:keyRotationEnabled = 'false' } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, 'KMS key rotation not enabled' as COMPLIANCE_FAILURE_REASON } }"}
 
 Internet-exposed hosts:
 {"queryId":"Custom_AWS_Hosts_InternetExposed","queryText":"{ source { LW_HE_MACHINES } filter { TAGS:lw_InternetExposure::String = 'Yes' } return distinct { MID, TAGS:Hostname::String as HOSTNAME, TAGS:Account::String as ACCOUNT, TAGS:Region::String as REGION, OS } }"}
