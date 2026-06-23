@@ -8,243 +8,293 @@
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
-  --bg:        #f5f6f8;
-  --surface:   #ffffff;
-  --border:    #e2e4e9;
-  --accent:    #EE3124;
-  --accent-d:  #c41e14;
-  --accent-lt: #fff0ef;
-  --navy:      #1a1a2e;
-  --navy-d:    #111120;
-  --text:      #111827;
-  --text-body: #374151;
-  --muted:     #9ca3af;
-  --ok:        #16a34a;
-  --err:       #dc2626;
-  --code-bg:   #f1f3f5;
-  --user-bg:   #EE3124;
-  --user-text: #ffffff;
-  --ai-bg:     #ffffff;
-  --ai-text:   #1f2937;
-  --mono:      "SF Mono", "Fira Code", "Consolas", monospace;
-  --sans:      -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", sans-serif;
-  --radius:    18px;
+  --sans: -apple-system, "Segoe UI", system-ui, sans-serif;
+  --mono: "SF Mono", "Fira Code", "Consolas", monospace;
+
+  --bg:         #0f1117;
+  --surface:    #181b22;
+  --surface2:   #1f232d;
+  --surface3:   #272b36;
+  --border:     #2a2e3d;
+  --dim:        #4a5166;
+  --text:       #e2e5ef;
+  --muted:      #7b859a;
+  --accent:     #ee3124;
+  --accent-d:   #c41230;
+  --accent-bg:  rgba(238,49,36,.08);
+  --ok:         #34d399;
+  --ok-bg:      rgba(52,211,153,.08);
+  --warn:       #fbbf24;
+  --err:        #f87171;
+  --err-bg:     rgba(248,113,113,.08);
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg:         #f0f2f5;
+    --surface:    #ffffff;
+    --surface2:   #f5f6f8;
+    --surface3:   #eceef2;
+    --border:     #d4d8e2;
+    --dim:        #9aa0b0;
+    --text:       #1a1d2e;
+    --muted:      #5a6070;
+    --accent:     #ee3124;
+    --accent-d:   #c41230;
+    --accent-bg:  rgba(238,49,36,.06);
+    --ok:         #059669;
+    --ok-bg:      rgba(5,150,105,.06);
+    --warn:       #d97706;
+    --err:        #dc2626;
+    --err-bg:     rgba(220,38,38,.06);
+  }
 }
 
 html, body {
   height: 100dvh;
   font-family: var(--sans);
-  font-size: 14px;
+  font-size: 13px;
   background: var(--bg);
-  color: var(--text-body);
+  color: var(--text);
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
 
-/* ── Header ── */
-#header {
+/* ── Config bar ── */
+#config-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 18px;
-  height: 54px;
-  background: var(--navy);
-  border-bottom: 3px solid var(--accent);
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
 
 .brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--accent);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  white-space: nowrap;
   margin-right: 6px;
 }
 
-.brand img {
-  height: 20px;
-  filter: brightness(0) invert(1);
-}
-
-.brand-sep {
-  width: 1px;
-  height: 16px;
-  background: rgba(255,255,255,.2);
-}
-
-.brand-label {
-  font: 600 13px/1 var(--sans);
-  letter-spacing: .08em;
+#config-bar label {
+  font-size: 10px;
+  color: var(--dim);
+  white-space: nowrap;
   text-transform: uppercase;
-  color: rgba(255,255,255,.85);
+  letter-spacing: .5px;
+  font-weight: 600;
 }
 
-.ctrl-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.ctrl-group label {
-  color: rgba(255,255,255,.4);
-  font: 600 10px/1 var(--sans);
-  letter-spacing: .06em;
-  text-transform: uppercase;
-}
-
-#header input, #header select {
-  font: 13px/1 var(--sans);
-  background: rgba(255,255,255,.09);
-  border: 1px solid rgba(255,255,255,.16);
-  color: #fff;
-  padding: 5px 9px;
+#config-bar input, #config-bar select {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 8px;
   border-radius: 6px;
   outline: none;
   transition: border-color .15s;
 }
-
-#header input:focus, #header select:focus { border-color: var(--accent); }
-#header select option { background: var(--navy-d); }
-#header input::placeholder { color: rgba(255,255,255,.3); }
-#key-input { width: 190px; }
+#config-bar input:focus, #config-bar select:focus { border-color: var(--accent); }
+#key-input   { width: 160px; }
+#model-sel   { width: 138px; font-family: var(--sans); }
+#tokens-sel  { width: 58px;  font-family: var(--sans); }
 
 #status {
   margin-left: auto;
-  font: 600 10px/1 var(--sans);
-  letter-spacing: .06em;
-  text-transform: uppercase;
-  color: rgba(255,255,255,.35);
+  font-size: 10px;
+  color: var(--dim);
   transition: color .2s;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 5px;
 }
-#status.ok   { color: #4ade80; }
-#status.err  { color: #f87171; }
-#status.busy { color: rgba(255,255,255,.6); }
+#status::before {
+  content: '';
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex-shrink: 0;
+  transition: background .2s;
+}
+#status.ok   { color: var(--ok); }
+#status.ok::before   { background: var(--ok); }
+#status.err  { color: var(--err); }
+#status.err::before  { background: var(--err); }
+#status.busy { color: var(--muted); }
+#status.busy::before { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 
-/* ── Message log ── */
+/* ── Chat log ── */
 #log {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 10px 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  padding: 8px 0 4px;
+  gap: 2px;
   scroll-behavior: smooth;
 }
-
-#log::-webkit-scrollbar { width: 4px; }
+#log::-webkit-scrollbar { width: 3px; }
 #log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
 
-/* ── Chat bubbles ── */
+@keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; } }
+
+/* ── Bubble rows ── */
 .turn {
   display: flex;
-  flex-direction: column;
+  align-items: flex-end;
+  gap: 7px;
   padding: 2px 10px;
-  animation: msgIn .14s ease;
+  animation: fadein .15s ease;
 }
+.turn-user   { flex-direction: row-reverse; }
+.turn-ai     { flex-direction: row; }
+.turn-system { flex-direction: row; justify-content: center; padding: 3px 14px; }
 
-@keyframes msgIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to   { opacity: 1; transform: none; }
-}
-
-.turn-user { align-items: flex-end; }
-.turn-ai   { align-items: flex-start; }
-.turn-system { align-items: center; }
-
-.role-label {
-  font: 600 10px/1 var(--sans);
-  letter-spacing: .05em;
+/* ── Avatar ── */
+.role {
+  width: 24px; height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 800;
+  flex-shrink: 0;
   text-transform: uppercase;
-  margin-bottom: 4px;
-  padding: 0 4px;
+  letter-spacing: .3px;
+  user-select: none;
+  margin-bottom: 2px;
 }
+.role.user   { background: var(--accent); color: #fff; }
+.role.ai     { background: #2563eb;       color: #fff; }
+.role.system { display: none; }
 
-.turn-user .role-label   { color: var(--accent); }
-.turn-ai   .role-label   { color: var(--muted); }
-.turn-system .role-label { color: var(--muted); }
+/* ── Bubble + label wrapper ── */
+.bubble-col {
+  display: flex;
+  flex-direction: column;
+  max-width: 82%;
+}
+.turn-user .bubble-col { align-items: flex-end; }
+.turn-ai   .bubble-col { flex: 1; min-width: 0; max-width: none; align-items: flex-start; }
 
-.bubble {
-  max-width: 88%;
-  padding: 10px 14px;
-  border-radius: var(--radius);
-  font: 14px/1.6 var(--sans);
+.turn-label {
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  color: var(--dim);
+  padding: 0 4px;
+  margin-bottom: 1px;
+  user-select: none;
+}
+.turn-user .turn-label { text-align: right; color: var(--accent); }
+.turn-ai   .turn-label { text-align: left;  color: #2563eb; }
+
+/* ── Bubbles ── */
+.content {
+  padding: 9px 12px;
+  border-radius: 14px;
   word-break: break-word;
   overflow-wrap: anywhere;
+  font-size: 12.5px;
+  line-height: 1.6;
+  min-width: 0;
   white-space: pre-wrap;
-  box-shadow: 0 1px 3px rgba(0,0,0,.07);
+  position: relative;
 }
-
-.turn-user .bubble {
-  background: var(--user-bg);
-  color: var(--user-text);
-  border-bottom-right-radius: 5px;
+.turn-user .content {
+  background: var(--accent);
+  color: #fff;
+  border-bottom-right-radius: 4px;
 }
-
-.turn-ai .bubble {
-  background: var(--ai-bg);
-  color: var(--ai-text);
-  border-bottom-left-radius: 5px;
-  border: 1px solid var(--border);
-  max-width: 94%;
+.turn-ai .content {
+  background: #1e2a3a;
+  color: #e2e8f4;
+  border-bottom-left-radius: 4px;
+  border: 1px solid #2d3f55;
+  padding-bottom: 26px;
 }
-
-.turn-system .bubble {
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  box-shadow: none;
-  border: 1px dashed var(--border);
-  border-radius: 8px;
-  padding: 5px 12px;
-  max-width: 90%;
+@media (prefers-color-scheme: light) {
+  .turn-ai .content { background: #f0f5ff; color: #1a2540; border-color: #c7d6f0; }
 }
-
-/* ── Code inside bubbles ── */
-.bubble code {
+.turn-system .content {
+  background: #1a1f14;
+  color: #7daf6a;
+  font-size: 10.5px;
   font-family: var(--mono);
-  font-size: 12px;
-  background: var(--code-bg);
-  color: var(--accent-d);
+  padding: 3px 10px;
+  border: 1px solid #2e3d24;
+  border-radius: 6px;
+  max-width: 95%;
+  text-align: center;
+}
+
+/* ── Inline code & pre ── */
+.content code {
+  font-family: var(--mono);
+  font-size: 11px;
+  background: rgba(255,255,255,.15);
+  color: inherit;
   padding: 1px 5px;
   border-radius: 4px;
 }
-
-.turn-user .bubble code {
-  background: rgba(255,255,255,.18);
-  color: #fff;
+.turn-ai .content code {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
 }
-
-.bubble pre {
-  background: var(--code-bg);
+.content pre {
+  background: var(--surface2);
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
   border-radius: 6px;
-  padding: 10px 12px;
+  padding: 9px 12px;
   overflow-x: auto;
   margin: 6px 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.5;
   white-space: pre;
+  color: var(--text);
 }
+.turn-user .content pre { border-left-color: rgba(255,255,255,.4); }
+.content pre code { background: none; padding: 0; color: inherit; }
 
-.bubble pre code { background: none; padding: 0; border: none; color: var(--text-body); }
-
-.turn-user .bubble pre {
-  background: rgba(0,0,0,.15);
-  border-color: rgba(255,255,255,.2);
-  color: #fff;
+/* ── Copy button (AI bubble) ── */
+.rc-copy-btn {
+  font: 600 10px/1 var(--sans);
+  padding: 3px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .1s, background .1s;
 }
-
-.turn-user .bubble pre code { color: #fff; }
+.rc-copy-btn:hover { color: var(--text); background: var(--surface3); }
+.turn-ai .content .rc-copy-btn {
+  position: absolute;
+  bottom: 6px;
+  right: 8px;
+}
 
 /* ── Streaming cursor ── */
 .cursor {
   display: inline-block;
-  width: 2px;
-  height: 14px;
+  width: 2px; height: 13px;
   background: var(--accent);
   vertical-align: text-bottom;
   border-radius: 1px;
@@ -255,110 +305,92 @@ html, body {
 
 /* ── Input bar ── */
 #input-wrap {
-  padding: 12px 16px;
-  background: var(--bg);
+  padding: 10px 12px;
+  background: var(--surface);
   border-top: 1px solid var(--border);
   flex-shrink: 0;
 }
-
 #input-inner {
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  background: var(--surface);
+  background: var(--surface2);
   border: 1.5px solid var(--border);
-  border-radius: 14px;
-  padding: 8px 8px 8px 14px;
-  transition: border-color .15s, box-shadow .15s;
+  border-radius: 12px;
+  padding: 7px 8px 7px 12px;
+  transition: border-color .15s;
 }
-
-#input-inner:focus-within {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(238,49,36,.08);
-}
+#input-inner:focus-within { border-color: var(--accent); }
 
 #prompt {
   flex: 1;
-  font: 14px/1.55 var(--sans);
+  font: 13px/1.55 var(--sans);
   border: none;
   outline: none;
   resize: none;
-  min-height: 24px;
-  max-height: 160px;
+  min-height: 22px;
+  max-height: 140px;
   background: transparent;
   color: var(--text);
   padding: 2px 0;
 }
-
 #prompt::placeholder { color: var(--muted); }
 
 #send {
-  width: 34px;
-  height: 34px;
+  width: 32px; height: 32px;
   flex-shrink: 0;
   background: var(--accent);
   color: #fff;
   border: none;
-  border-radius: 10px;
+  border-radius: 8px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: background .15s, transform .1s;
-  font-size: 16px;
+  font-size: 15px;
   line-height: 1;
 }
-
 #send:hover:not(:disabled) { background: var(--accent-d); transform: scale(1.04); }
 #send:disabled { opacity: .35; cursor: not-allowed; transform: none; }
 
-/* ── Footer hint ── */
+/* ── Footer ── */
 #footer {
-  padding: 4px 18px 6px;
-  font: 11px/1 var(--sans);
-  color: rgba(255,255,255,.3);
-  background: var(--navy);
+  padding: 4px 14px 5px;
+  font: 10px/1 var(--sans);
+  color: var(--dim);
+  background: var(--surface);
+  border-top: 1px solid var(--border);
   display: flex;
   justify-content: space-between;
   align-items: center;
   flex-shrink: 0;
 }
-
-#token-info { color: rgba(255,255,255,.45); font: 600 10px/1 var(--sans); letter-spacing: .03em; }
+#token-info { color: var(--muted); font: 600 10px/1 var(--sans); letter-spacing: .03em; }
 </style>
 </head>
 <body>
 
-<div id="header">
-  <div class="brand">
-    <img src="https://www.fortinet.com/content/dam/fortinet-blog/fortinet-logo-white.svg" alt="Fortinet" />
-    <div class="brand-sep"></div>
-    <span class="brand-label">Web AI Agent</span>
-  </div>
+<div id="config-bar">
+  <span class="brand">Web AI Agent</span>
 
-  <div class="ctrl-group">
-    <label for="key-input">key</label>
-    <input id="key-input" type="password" placeholder="sk-bf-… or sk-ant-…" autocomplete="off" />
-  </div>
+  <label for="key-input">key</label>
+  <input id="key-input" type="password" placeholder="sk-bf-… or sk-ant-…" autocomplete="off" />
 
-  <div class="ctrl-group">
-    <label for="model">model</label>
-    <select id="model">
-      <option value="claude-haiku-4-5">haiku 4.5 ⚡</option>
-      <option value="claude-sonnet-4-6" selected>sonnet 4.6</option>
-      <option value="claude-opus-4-8">opus 4.8</option>
-    </select>
-  </div>
+  <label for="model-sel">model</label>
+  <select id="model-sel">
+    <option value="claude-haiku-4-5">haiku 4.5 ⚡</option>
+    <option value="claude-sonnet-4-6" selected>sonnet 4.6</option>
+    <option value="claude-opus-4-8">opus 4.8</option>
+  </select>
 
-  <div class="ctrl-group">
-    <label for="max-tokens">tokens</label>
-    <select id="max-tokens">
-      <option value="1024">1k</option>
-      <option value="2048" selected>2k</option>
-      <option value="4096">4k</option>
-      <option value="8192">8k</option>
-    </select>
-  </div>
+  <label for="tokens-sel">tokens</label>
+  <select id="tokens-sel">
+    <option value="1024">1k</option>
+    <option value="2048" selected>2k</option>
+    <option value="4096">4k</option>
+    <option value="8192">8k</option>
+  </select>
 
   <span id="status">—</span>
 </div>
@@ -386,8 +418,8 @@ const BASE_URL = (location.hostname === 'localhost' || location.hostname === '12
 const history = [];
 let busy = false;
 
-const $ = id => document.getElementById(id);
-const st = (msg, cls='') => { const s=$('status'); s.textContent=msg; s.className=cls; };
+const el  = id => document.getElementById(id);
+const st  = (msg, cls='') => { const s = el('status'); s.textContent = msg; s.className = cls; };
 
 // ── Markdown ──────────────────────────────────────────────────────────────────
 function render(t) {
@@ -396,7 +428,8 @@ function render(t) {
   t = t.replace(/`([^`]+)`/g,    (_,c) => `<code>${e(c)}</code>`);
   t = t.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   t = t.replace(/\*(.+?)\*/g,     '<em>$1</em>');
-  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;opacity:.85">$1</a>');
+  t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g,
+    '<a href="$2" target="_blank" rel="noopener" style="color:var(--accent);text-decoration:underline;opacity:.85">$1</a>');
   return t;
 }
 
@@ -416,7 +449,7 @@ function render(t) {
 })();
 
 // ── Persist key ───────────────────────────────────────────────────────────────
-const ki = $('key-input');
+const ki = el('key-input');
 const saved = localStorage.getItem('bf_key');
 if (saved) ki.value = saved;
 ki.addEventListener('change', () => {
@@ -425,63 +458,85 @@ ki.addEventListener('change', () => {
 });
 
 // ── Textarea auto-resize ──────────────────────────────────────────────────────
-function resize(el) {
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight, 160) + 'px';
-}
-
-function onKey(e) {
-  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
-}
+function resize(t) { t.style.height = 'auto'; t.style.height = Math.min(t.scrollHeight, 140) + 'px'; }
+function onKey(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }
 
 // ── Append bubble ─────────────────────────────────────────────────────────────
-function appendTurn(role, text='', modelLabel='') {
+function appendTurn(role, text = '', modelLabel = '') {
   const wrap = document.createElement('div');
   wrap.className = `turn turn-${role}`;
 
+  const avatar = document.createElement('div');
+  avatar.className = `role ${role}`;
+  avatar.textContent = role === 'user' ? 'You' : role === 'ai' ? 'AI' : '';
+
+  const col = document.createElement('div');
+  col.className = 'bubble-col';
+
   const lbl = document.createElement('div');
-  lbl.className = 'role-label';
+  lbl.className = 'turn-label';
   lbl.textContent = role === 'user' ? 'You' : role === 'ai' ? (modelLabel || 'AI') : 'System';
 
-  const bubble = document.createElement('div');
-  bubble.className = 'bubble';
-  if (text) bubble.innerHTML = render(text);
+  const body = document.createElement('div');
+  body.className = 'content';
+  if (text) body.innerHTML = render(text);
 
-  wrap.append(lbl, bubble);
-  $('log').appendChild(wrap);
+  if (role === 'ai') {
+    const copyBtn = makeCopyBtn(body);
+    body._copyBtn = copyBtn;
+    body.appendChild(copyBtn);
+  }
+
+  col.append(lbl, body);
+  wrap.append(avatar, col);
+  el('log').appendChild(wrap);
   scrollLog();
-  return bubble;
+  return body;
 }
 
-function scrollLog() {
-  const l = $('log'); l.scrollTop = l.scrollHeight;
+function makeCopyBtn(targetBody) {
+  const btn = document.createElement('button');
+  btn.className = 'rc-copy-btn';
+  btn.textContent = 'Copy';
+  btn.title = 'Copy response';
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const txt = targetBody.innerText.replace(/\nCopy$/, '').trim();
+    navigator.clipboard.writeText(txt).then(() => {
+      btn.textContent = 'Copied!';
+      setTimeout(() => { btn.textContent = 'Copy'; }, 1500);
+    });
+  });
+  return btn;
 }
+
+function scrollLog() { const l = el('log'); l.scrollTop = l.scrollHeight; }
 
 // ── Send ──────────────────────────────────────────────────────────────────────
 async function send() {
   if (busy) return;
 
-  const key   = $('key-input').value.trim();
-  const model = $('model').value;
-  const maxTk = parseInt($('max-tokens').value);
-  const text  = $('prompt').value.trim();
+  const key   = el('key-input').value.trim();
+  const model = el('model-sel').value;
+  const maxTk = parseInt(el('tokens-sel').value);
+  const text  = el('prompt').value.trim();
 
-  if (!key)  { appendTurn('system', 'No API key — enter your key in the toolbar.'); return; }
+  if (!key)  { appendTurn('system', 'No API key — enter your key in the config bar.'); return; }
   if (!text) return;
 
   history.push({ role: 'user', content: text });
   appendTurn('user', text);
-  $('prompt').value = '';
-  $('prompt').style.height = 'auto';
+  el('prompt').value = '';
+  el('prompt').style.height = 'auto';
 
-  const shortModel = model.replace('claude-','');
+  const shortModel = model.replace('claude-', '');
   const aiBubble = appendTurn('ai', '', shortModel);
   const cursor   = Object.assign(document.createElement('span'), { className: 'cursor' });
-  aiBubble.appendChild(cursor);
+  aiBubble.insertBefore(cursor, aiBubble._copyBtn || null);
 
   busy = true;
-  $('send').disabled = true;
-  st('●  streaming', 'busy');
+  el('send').disabled = true;
+  st('streaming', 'busy');
 
   let out = '', inputTk = 0, outputTk = 0;
 
@@ -517,21 +572,25 @@ async function send() {
           const ev = JSON.parse(raw);
           if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
             out += ev.delta.text;
+            const copyBtn = aiBubble._copyBtn;
             aiBubble.innerHTML = render(out);
             aiBubble.appendChild(cursor);
+            if (copyBtn) { aiBubble._copyBtn = copyBtn; aiBubble.appendChild(copyBtn); }
             scrollLog();
           }
-          if (ev.type === 'message_start')  inputTk  = ev.message?.usage?.input_tokens ?? 0;
-          if (ev.type === 'message_delta')  outputTk = ev.usage?.output_tokens ?? 0;
+          if (ev.type === 'message_start') inputTk  = ev.message?.usage?.input_tokens  ?? 0;
+          if (ev.type === 'message_delta') outputTk = ev.usage?.output_tokens ?? 0;
         } catch (_) {}
       }
     }
 
     cursor.remove();
+    const copyBtn = aiBubble._copyBtn;
     aiBubble.innerHTML = render(out);
+    if (copyBtn) { aiBubble._copyBtn = copyBtn; aiBubble.appendChild(copyBtn); }
     history.push({ role: 'assistant', content: out });
-    st('✓', 'ok');
-    $('token-info').textContent = `↑ ${inputTk}  ↓ ${outputTk}  total ${inputTk+outputTk} tokens`;
+    st('ready', 'ok');
+    el('token-info').textContent = `↑ ${inputTk}  ↓ ${outputTk}  total ${inputTk + outputTk} tokens`;
 
   } catch (err) {
     cursor.remove();
@@ -540,12 +599,12 @@ async function send() {
     st('error', 'err');
   } finally {
     busy = false;
-    $('send').disabled = false;
+    el('send').disabled = false;
     scrollLog();
   }
 }
 
-$('prompt').focus();
+el('prompt').focus();
 </script>
 </body>
 </html>
