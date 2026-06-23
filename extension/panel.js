@@ -340,19 +340,92 @@ function renderMarkdown(text) {
     const url = /^https?:\/\//i.test(href) ? href : `https://${href}`;
     return `<a class="ext-link" data-href="${url}">${label}</a>`;
   };
-  return text.split(/(```[\s\S]*?```)/g).map((part, i) => {
-    if (i % 2 === 1) {
-      const code = part.replace(/^```\w*\n?/, '').replace(/```$/, '');
-      return `<pre><code>${esc(code.trimEnd())}</code></pre>`;
-    }
-    let s = esc(part);
-    s = s.replace(/`([^`\n]+)`/g,     '<code>$1</code>');
-    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  const inline = s => {
+    s = s.replace(/`([^`\n]+)`/g,          '<code>$1</code>');
+    s = s.replace(/\*\*\*([^*]+)\*\*\*/g,  '<strong><em>$1</em></strong>');
+    s = s.replace(/\*\*([^*]+)\*\*/g,      '<strong>$1</strong>');
+    s = s.replace(/\*([^*\n]+)\*/g,        '<em>$1</em>');
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g, (_, l, h) => link(h, l));
-    s = s.replace(/(?<!data-href=")(https?:\/\/[^\s<>"]+)/g,              u => link(u, u));
+    s = s.replace(/(?<!data-href=")(https?:\/\/[^\s<>"]+)/g, u => link(u, u));
     s = s.replace(/(?<![/"'>])(www\.[a-zA-Z0-9-]+\.[a-zA-Z]{2,}[^\s<>"]*)/, u => link(u, u));
     return s;
-  }).join('');
+  };
+
+  // Split on fenced code blocks first
+  const parts = text.split(/(```[\s\S]*?```)/g);
+  const html = parts.map((part, i) => {
+    if (i % 2 === 1) {
+      const lang = (part.match(/^```(\w+)/) || [])[1] || '';
+      const code = part.replace(/^```\w*\n?/, '').replace(/```$/, '');
+      return `<pre${lang ? ` data-lang="${esc(lang)}"` : ''}><code>${esc(code.trimEnd())}</code></pre>`;
+    }
+
+    const lines  = esc(part).split('\n');
+    const out    = [];
+    let listType = null, listItems = [], tableRows = [];
+
+    const flushList = () => {
+      if (!listItems.length) return;
+      out.push(`<${listType}>${listItems.map(li => `<li>${inline(li)}</li>`).join('')}</${listType}>`);
+      listItems = []; listType = null;
+    };
+    const flushTable = () => {
+      if (!tableRows.length) return;
+      const header = tableRows[0].map(c => `<th>${inline(c)}</th>`).join('');
+      const body   = tableRows.slice(2).map(r => `<tr>${r.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`).join('');
+      out.push(`<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`);
+      tableRows = [];
+    };
+
+    for (const raw of lines) {
+      const line = raw;
+
+      // Horizontal rule
+      if (/^(\*\*\*|---|___)\s*$/.test(line.trim())) {
+        flushList(); flushTable();
+        out.push('<hr>'); continue;
+      }
+      // Table row
+      if (/^\|/.test(line)) {
+        const cells = line.split('|').slice(1, -1).map(c => c.trim());
+        tableRows.push(cells); continue;
+      }
+      if (tableRows.length) { flushTable(); }
+
+      // Headings
+      const hm = line.match(/^(#{1,4})\s+(.*)/);
+      if (hm) {
+        flushList();
+        const lvl = Math.min(hm[1].length + 1, 4); // h2–h4 inside bubble
+        out.push(`<h${lvl} class="md-h">${inline(hm[2])}</h${lvl}>`); continue;
+      }
+      // Blockquote
+      if (/^&gt;\s?/.test(line)) {
+        flushList();
+        out.push(`<blockquote>${inline(line.replace(/^&gt;\s?/, ''))}</blockquote>`); continue;
+      }
+      // Unordered list
+      const ul = line.match(/^(\s*)[-*+]\s+(.*)/);
+      if (ul) {
+        if (listType !== 'ul') { flushList(); listType = 'ul'; }
+        listItems.push(ul[2]); continue;
+      }
+      // Ordered list
+      const ol = line.match(/^\s*\d+\.\s+(.*)/);
+      if (ol) {
+        if (listType !== 'ol') { flushList(); listType = 'ol'; }
+        listItems.push(ol[1]); continue;
+      }
+
+      flushList();
+      // Blank line → paragraph break
+      if (!line.trim()) { out.push('<br>'); continue; }
+      out.push(`<p>${inline(line)}</p>`);
+    }
+    flushList(); flushTable();
+    return out.join('');
+  });
+  return html.join('');
 }
 
 function setRendered(node, html) {

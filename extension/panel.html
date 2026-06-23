@@ -684,7 +684,6 @@ body {
   font-size: 12.5px;
   line-height: 1.6;
   min-width: 0;
-  white-space: pre-wrap;
 }
 .turn-user .content {
   background: var(--accent);
@@ -771,6 +770,75 @@ a.ext-link {
   cursor: pointer;
 }
 a.ext-link:hover { color: var(--accent-d); }
+
+/* ── AI bubble rich markdown ──────────────────────────────────────────────── */
+.turn-ai .content h2.md-h,
+.turn-ai .content h3.md-h,
+.turn-ai .content h4.md-h {
+  font-family: var(--sans);
+  font-weight: 700;
+  color: #e2e8f4;
+  margin: 14px 0 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid #2d3f55;
+  line-height: 1.3;
+}
+.turn-ai .content h2.md-h { font-size: 13.5px; letter-spacing: .2px; color: #93c5fd; border-bottom-color: #1e3a5f; }
+.turn-ai .content h3.md-h { font-size: 12px;   color: #7dd3fc; border-bottom: none; margin-bottom: 2px; }
+.turn-ai .content h4.md-h { font-size: 11.5px; color: var(--muted); border-bottom: none; font-weight: 600; }
+.turn-ai .content p  { margin: 3px 0; }
+.turn-ai .content br { display: block; margin: 4px 0; content: ''; }
+.turn-ai .content ul,
+.turn-ai .content ol { margin: 4px 0 4px 18px; padding: 0; }
+.turn-ai .content li { margin: 2px 0; }
+.turn-ai .content hr {
+  border: none;
+  border-top: 1px solid #2d3f55;
+  margin: 10px 0;
+}
+.turn-ai .content blockquote {
+  border-left: 3px solid var(--accent);
+  margin: 6px 0;
+  padding: 4px 10px;
+  color: var(--muted);
+  background: rgba(238,49,36,.06);
+  border-radius: 0 6px 6px 0;
+  font-style: italic;
+}
+.turn-ai .content table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 11.5px;
+}
+.turn-ai .content th {
+  background: #1a2d45;
+  color: #93c5fd;
+  font-weight: 700;
+  text-align: left;
+  padding: 5px 8px;
+  border: 1px solid #2d3f55;
+  white-space: nowrap;
+}
+.turn-ai .content td {
+  padding: 4px 8px;
+  border: 1px solid #2d3f55;
+  vertical-align: top;
+  color: #c8d8ee;
+}
+.turn-ai .content tr:nth-child(even) td { background: rgba(255,255,255,.03); }
+.turn-ai .content td strong { color: #fbbf24; }
+/* Risk level colour coding */
+.turn-ai .content td:has(> strong) { }
+.turn-ai .content pre[data-lang]::before {
+  content: attr(data-lang);
+  display: block;
+  font-size: 9px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  margin-bottom: 4px;
+}
 
 /* ── Feature result card (CodeSec / CVE / LQL injected into log) ─────────── */
 .result-card {
