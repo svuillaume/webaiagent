@@ -718,7 +718,7 @@ async function withPage(btnId, fn) {
     btn.classList.remove('fg-alert');
     // Record seen time so it won't flash again for same alerts
     await chrome.storage.local.set({ [STORE_KEY]: Date.now() });
-    chrome.tabs.create({ url: 'https://www.fortiguard.com/' });
+    chrome.tabs.create({ url: 'https://www.fortinet.com/fortiguard/outbreak-alert?tab=outbreak-alerts' });
   });
 
   // Check on load, then every 30 minutes
