@@ -1115,30 +1115,126 @@ el('cve-analyse').addEventListener('click', () => {
 });
 
 const EXEC_REPORT_TEMPLATE = `
-Produce an executive security report for a C-level audience. Use this exact structure every time:
-
-## Executive Summary
-One paragraph. Business impact first: what is at risk, what could happen, what is the financial / operational / reputational exposure. No jargon.
-
-## Risk Rating
-| Dimension | Rating | Rationale |
-|---|---|---|
-| Severity | CRITICAL / HIGH / MEDIUM / LOW | |
-| Blast Radius | (number or scope) | |
-| Likelihood of Exploit | HIGH / MEDIUM / LOW | |
-| Business Impact | (one line) | |
-
-## Key Findings
-Bullet list. Each finding: asset name, what is wrong, why it matters to the business. Lead with the worst.
-
-## Immediate Actions (Next 24–72 h)
-Numbered list. Specific, actionable, owner-assignable. Include the patch version or config change.
-
-## Strategic Recommendations (30-day plan)
-Bullet list. Process or architectural improvements to prevent recurrence.
+You are writing a CISO/VP-level security report. Use the exact structure below, every time, without deviation. Be outcome-focused, visual, and action-oriented. Lead with risk and business impact. Put technical details last.
 
 ---
-Rules: Be concise. No filler. Prioritise business consequence over technical detail. Flag any internet-exposed or customer-facing assets as critical.`;
+
+# [Finding Title] — Risk Assessment
+
+**Assessment Date:** [today]
+**Priority:** CRITICAL / HIGH / MEDIUM / LOW
+**Affected Assets:** [count and type]
+**Affected Accounts / Systems:** [scope]
+**Regions / Environments:** [if applicable]
+
+---
+
+## Executive Summary
+
+### [Risk Headline in bold]
+
+Two to three sentences. What is exposed, what could happen to the business if exploited, and what decision is needed now. No jargon. Write for a board member.
+
+List any specifically named high-risk assets (exact names from the data).
+
+If sensitive data may be involved, state the potential consequences:
+- Regulatory reporting obligations
+- Compliance violations (GDPR, CCPA, PCI-DSS, HIPAA)
+- Incident response costs
+- Customer notification obligations
+- Reputational damage
+
+**Executive Decision Required:** One sentence on what must be approved or initiated within 24 hours.
+
+---
+
+## Risk Overview
+
+| Category | Assessment |
+|---|---|
+| Overall Risk | CRITICAL / HIGH / MEDIUM / LOW |
+| Affected Scope | [number and type] |
+| Geographic / Environment Scope | [regions or systems] |
+| Potential Data Types | [PII, Credentials, Config, Logs, etc.] |
+| Regulatory Exposure | HIGH / MEDIUM / LOW |
+| Exploit Likelihood | HIGH / MEDIUM / LOW |
+| Business Impact | HIGH / MEDIUM / LOW |
+
+## Risk Heat Map
+
+| Risk Area | Level |
+|---|---|
+| [Top risk area] | CRITICAL |
+| [Second area] | HIGH |
+| [Third area] | HIGH |
+| [Fourth area] | MEDIUM |
+
+---
+
+## Key Findings
+
+### 1. [Most Critical Finding Title]
+
+Table listing the worst affected assets (name, account/owner, location, risk level).
+
+Explain what these assets contain or could expose, and why that matters to the business.
+
+### 2. [Second Finding Title]
+
+Repeat structure. Group related assets together. Focus on business consequence.
+
+[Continue for each distinct finding category]
+
+---
+
+## Business Impact Assessment
+
+### Regulatory Impact
+Which regulations may be triggered. What the penalties or obligations are.
+
+### Operational Impact
+What attackers could do with this information. What internal operations are at risk.
+
+### Reputational Impact
+Customer trust, brand damage, media exposure risk.
+
+---
+
+## Immediate Response Plan (0–72 Hours)
+
+### Priority 1 — Contain
+Specific assets to lock down immediately. Exact actions (block public access, revoke credentials, isolate system).
+
+### Priority 2 — Validate Exposure
+How to confirm whether data was accessed. Tools or services to invoke.
+
+### Priority 3 — Protect Credentials
+Any secrets, keys, or config that must be rotated.
+
+### Priority 4 — Assign Ownership
+Owner assignment and deadline requirements.
+
+---
+
+## Strategic Remediation Plan (30 Days)
+
+Group into: Governance, Data Protection, Security Monitoring, Asset Hygiene. Bullet points per group.
+
+---
+
+## Recommended Executive Actions
+
+**Immediate Approval Requested:**
+Numbered list of decisions or authorizations needed from leadership.
+
+---
+
+## Conclusion
+
+Two sentences. Restate the risk and the single most important thing to do now.
+
+---
+Rules: Use the data provided. Name specific assets. No filler sentences. Every section must be present. Tables preferred over prose for risk data.`;
 
 function buildCveAnalysisPrompt(d) {
   const fixVer = d.hosts.find(h => h.fix_available)?.fixed_version || 'latest';
@@ -1241,6 +1337,16 @@ function renderCveResults(data) {
     const name = document.createElement('span');
     name.className   = 'cve-host-name';
     name.textContent = h.hostname;
+    name.title       = 'Click to copy';
+    name.style.cursor = 'pointer';
+    name.addEventListener('click', () => {
+      navigator.clipboard.writeText(h.hostname).then(() => {
+        const orig = name.textContent;
+        name.textContent = '✓ copied';
+        name.style.color = 'var(--ok)';
+        setTimeout(() => { name.textContent = orig; name.style.color = ''; }, 1200);
+      });
+    });
     hdr.appendChild(name);
 
     if (h.host_exposed) {
