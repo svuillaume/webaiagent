@@ -77,20 +77,12 @@ def _fg_outbreaks_cached():
         with _ur.urlopen(req, timeout=10) as r:
             xml_bytes = r.read()
 
-        # Safe XML parsing — defusedxml with all protections explicit
-        try:
-            from defusedxml.ElementTree import fromstring as _safe_fromstring
-            root = _safe_fromstring(xml_bytes,
-                                    forbid_dtd=True,
-                                    forbid_entities=True,
-                                    forbid_external=True)
-        except ImportError:
-            import xml.etree.ElementTree as _stdlib_et
-            # Disable entity replacement and parameter entity parsing
-            _parser = _stdlib_et.XMLParser(target=_stdlib_et.TreeBuilder())
-            _parser.entity = {}
-            _parser.parser.SetParamEntityParsing(0)
-            root = _stdlib_et.fromstring(xml_bytes, parser=_parser)
+        # defusedxml is a required dependency (requirements.txt) — no stdlib fallback
+        from defusedxml.ElementTree import fromstring as _safe_fromstring
+        root = _safe_fromstring(xml_bytes,
+                                forbid_dtd=True,
+                                forbid_entities=True,
+                                forbid_external=True)
         items = []
         for item in root.findall('.//item'):
             title   = (item.findtext('title')       or '').strip()
