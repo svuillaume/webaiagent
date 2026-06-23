@@ -408,7 +408,7 @@ el('fortiguard-feed').addEventListener('click', () => {
 });
 
 el('fcnapp-community').addEventListener('click', () => {
-  chrome.tabs.create({ url: 'https://community.fortinet.com/p/search-result?searchString=forticnapp&activeType=all&from=0&sortby=_score&orderBy=desc&pageNo=1&aggregations=%5B%7B%22type%22%3A%221_13_community_prod___articles___categoryName%22%2C%22filter%22%3A%5B%22Blogs%22%5D%7D%5D&uid=5512175b-3809-11f1-94e2-0242ac120016&resultsPerPage=10&exactPhrase=&withOneOrMore=&withoutTheWords=&pageSize=10&language=en&suCaseCreate=false' });
+  chrome.tabs.create({ url: 'https://community.fortinet.com/forticnapp-63' });
 });
 
 el('read-page').addEventListener('click', () => withPage('read-page', page => {
