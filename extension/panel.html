@@ -916,10 +916,22 @@ a.ext-link:hover { color: var(--accent-d); }
 
 /* AI bubble copy btn — sits below the bubble */
 .turn-ai .bubble-col .rc-copy-btn,
-.turn-ai .content .rc-copy-btn {
-  display: block;
+.turn-ai .bubble-col .rc-pdf-btn,
+.turn-ai .content .rc-copy-btn,
+.turn-ai .content .rc-pdf-btn {
+  display: inline-block;
   margin-top: 4px;
+  margin-right: 4px;
   align-self: flex-start;
+}
+.rc-pdf-btn {
+  background: #003366 !important;
+  color: #fff !important;
+  border-color: #003366 !important;
+}
+.rc-pdf-btn:hover {
+  background: #004499 !important;
+  color: #fff !important;
 }
 .cs-result-body, .cve-result-body, .lql-result-body {
   padding: 8px 12px;
