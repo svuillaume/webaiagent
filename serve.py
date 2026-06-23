@@ -52,6 +52,9 @@ CORS = {
     'Access-Control-Allow-Headers': 'Content-Type, x-api-key, anthropic-version',
 }
 
+# LQL generation cache: normalized_objective → {queryId, queryText, rows, count, total}
+_lql_cache: dict = {}
+
 
 class Handler(http.server.BaseHTTPRequestHandler):
 
@@ -752,6 +755,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, json.dumps({'error': 'objective is required'}).encode())
             return
 
+        # Cache lookup — normalize to lowercase, collapse whitespace
+        cache_key = ' '.join(objective.lower().split())
+        if cache_key in _lql_cache:
+            cached = dict(_lql_cache[cache_key])
+            cached['cached'] = True
+            self.send_json(200, json.dumps(cached).encode())
+            return
+
         if not UPSTREAM or not VIRTUAL_KEY:
             self.send_json(503, json.dumps({'error': 'Gateway URL or virtual key not configured'}).encode())
             return
@@ -1059,29 +1070,34 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 raw = raw[brace:]
             return json.loads(raw)
 
-        def _validate_lql(query_text):
-            """Validate query syntax only (no data read). Returns error string or None on success."""
+        def _run_lql(query_text):
+            """Run query for real. Returns (rows, error_string). rows=None on error."""
             if not shutil.which('lacework'):
-                return None  # no CLI available — skip validation, let the run step catch errors
+                return None, None  # no CLI — let extension call /lql/run
+            now   = datetime.now(timezone.utc)
+            start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
             tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.lql', delete=False)
             tmp.write(query_text); tmp.close()
             try:
-                cmd = ['lacework', 'query', 'run', '-f', tmp.name, '--validate_only']
+                cmd = ['lacework', 'query', 'run', '-f', tmp.name,
+                       '--start', start, '--end', end, '--json']
                 if LW_PROFILE:
                     cmd += ['--profile', LW_PROFILE]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-                if r.returncode == 0:
-                    return None  # valid
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if r.returncode == 0 and r.stdout.strip():
+                    raw  = json.loads(r.stdout)
+                    rows = raw.get('data', raw) if isinstance(raw, dict) else raw
+                    return (rows if isinstance(rows, list) else []), None
                 err = (r.stderr or r.stdout or '').strip()
-                # extract the first meaningful error line
                 for line in err.splitlines():
                     if 'Error:' in line or 'Unable to' in line or 'error' in line.lower():
-                        return line.strip()
-                return err[-300:] if err else 'validation failed'
+                        return None, line.strip()
+                return None, err[-300:] if err else 'query failed'
             except subprocess.TimeoutExpired:
-                return 'validation timed out'
+                return None, 'query timed out'
             except Exception as e:
-                return str(e)
+                return None, str(e)
             finally:
                 os.unlink(tmp.name)
 
@@ -1089,23 +1105,37 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             messages = [{'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'}]
             result = _call_claude(messages)
 
-            # validate-then-fix loop — up to 3 attempts
-            # each round: validate syntax with --validate_only; on error send the message back to Claude to fix
+            # run-then-fix loop — up to 3 attempts; caches validated query on success
             MAX_RETRIES = 3
+            cached_rows = None
             for attempt in range(MAX_RETRIES):
                 query_text = result.get('queryText', '')
                 if not query_text or result.get('queryId') == 'USE_CVE_TAB':
-                    break  # CVE routing or empty query — no validation needed
-                err = _validate_lql(query_text)
+                    break
+                rows, err = _run_lql(query_text)
                 if err is None:
-                    break  # query is syntactically valid
+                    cached_rows = rows
+                    break
                 if attempt < MAX_RETRIES - 1:
                     messages.append({'role': 'assistant', 'content': json.dumps(result)})
                     messages.append({'role': 'user', 'content': (
-                        f'That LQL query failed validation with this error:\n{err}\n\n'
-                        'Fix the LQL syntax and return only the corrected JSON object.'
+                        f'That LQL query failed with this error:\n{err}\n\n'
+                        'Fix the LQL and return only the corrected JSON object.'
                     )})
                     result = _call_claude(messages)
+
+            # Attach pre-run rows — keep lean, no caching of rows (rows re-run fresh on next request)
+            if cached_rows is not None:
+                result['rows']  = cached_rows
+                result['count'] = len(cached_rows)
+                result['total'] = len(cached_rows)
+
+            # Cache only queryId+queryText — skip rows to keep endpoint cache small
+            if result.get('queryText') and result.get('queryId') != 'USE_CVE_TAB':
+                _lql_cache[cache_key] = {
+                    'queryId':   result['queryId'],
+                    'queryText': result['queryText'],
+                }
 
             self.send_json(200, json.dumps(result).encode())
         except urllib.error.HTTPError as e:
