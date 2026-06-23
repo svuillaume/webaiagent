@@ -403,9 +403,47 @@ async function withPage(btnId, fn) {
   }
 }
 
-el('fortiguard-feed').addEventListener('click', () => {
-  chrome.tabs.create({ url: 'https://www.fortiguard.com/' });
-});
+// ── FortiGuard outbreak alert flash ─────────────────────────────────────────
+(async function initFortiGuardAlert() {
+  const btn       = el('fortiguard-feed');
+  const STORE_KEY = 'fg_seen_outbreak';
+  const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
+
+  async function checkOutbreaks() {
+    try {
+      const res  = await fetch(BASE_URL + '/fortiguard/outbreaks');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.items?.length) return;
+
+      const now    = Date.now();
+      const newest = data.items
+        .map(i => ({ ...i, ts: i.pubDate ? new Date(i.pubDate).getTime() : 0 }))
+        .filter(i => i.ts > 0 && (now - i.ts) < FIVE_DAYS);
+
+      if (!newest.length) { btn.classList.remove('fg-alert'); return; }
+
+      // Check if user already saw this alert
+      const { [STORE_KEY]: seen } = await chrome.storage.local.get(STORE_KEY);
+      const latestTs = Math.max(...newest.map(i => i.ts));
+      if (seen && seen >= latestTs) { btn.classList.remove('fg-alert'); return; }
+
+      btn.classList.add('fg-alert');
+      btn.title = `⚠ ${newest.length} outbreak alert${newest.length > 1 ? 's' : ''} in the last 5 days — click to view`;
+    } catch { /* serve.py not running */ }
+  }
+
+  btn.addEventListener('click', async () => {
+    btn.classList.remove('fg-alert');
+    // Record seen time so it won't flash again for same alerts
+    await chrome.storage.local.set({ [STORE_KEY]: Date.now() });
+    chrome.tabs.create({ url: 'https://www.fortiguard.com/' });
+  });
+
+  // Check on load, then every 30 minutes
+  checkOutbreaks();
+  setInterval(checkOutbreaks, 30 * 60 * 1000);
+})();
 
 el('fcnapp-community').addEventListener('click', () => {
   chrome.tabs.create({ url: 'https://community.fortinet.com/forticnapp-63' });

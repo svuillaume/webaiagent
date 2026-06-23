@@ -139,6 +139,9 @@ body {
 #status.busy { color: var(--muted); }
 #status.busy::before { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+@keyframes fg-flash { 0%,100% { background: var(--surface2); color: var(--text); border-color: var(--border); }
+  50% { background: var(--err-bg); color: var(--err); border-color: rgba(248,113,113,.4); } }
+#fortiguard-feed.fg-alert { animation: fg-flash 1.4s ease-in-out infinite; }
 
 /* ── Row 2: Action bar ───────────────────────────────────────────────────── */
 #action-bar {

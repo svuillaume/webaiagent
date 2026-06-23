@@ -93,6 +93,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_compliance_text()
         elif self.path == '/lql/queries':
             self.serve_lql_queries()
+        elif self.path == '/fortiguard/outbreaks':
+            self.serve_fortiguard_outbreaks()
         else:
             self.send_error(404)
 
@@ -708,6 +710,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 pass
             queries.append({'id': query_id, 'filename': fname, 'queryText': query_text})
         self.send_json(200, json.dumps({'queries': queries}).encode())
+
+    def serve_fortiguard_outbreaks(self):
+        import urllib.request as _ur
+        import xml.etree.ElementTree as _et
+        from email.utils import parsedate_to_datetime
+        try:
+            req = _ur.Request(
+                'https://www.fortiguard.com/rss/ir.xml',
+                headers={'User-Agent': 'Mozilla/5.0 WebAIAgent/1.0'},
+            )
+            with _ur.urlopen(req, timeout=8) as r:
+                xml_bytes = r.read()
+            root = _et.fromstring(xml_bytes)
+            ns   = {'dc': 'http://purl.org/dc/elements/1.1/'}
+            items = []
+            for item in root.findall('.//item'):
+                title   = (item.findtext('title') or '').strip()
+                link    = (item.findtext('link')  or '').strip()
+                pub_raw = (item.findtext('pubDate') or '').strip()
+                try:
+                    pub_iso = parsedate_to_datetime(pub_raw).isoformat()
+                except Exception:
+                    pub_iso = ''
+                items.append({'title': title, 'link': link, 'pubDate': pub_iso})
+            self.send_json(200, json.dumps({'items': items}).encode())
+        except Exception as e:
+            self.send_json(502, json.dumps({'error': str(e)}).encode())
 
     def serve_lql_generate(self):
         try:
