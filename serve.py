@@ -135,7 +135,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = json.dumps({
             'gateway_url': env.get('ANTHROPIC_BASE_URL', ''),
             'api_key':     VIRTUAL_KEY,
-            'lw_ready':    LW_READY,
+            'lw_ready':    LW_READY,       # creds present (LQL/CVE/Compliance work)
+            'lw_cli':      LW_AVAILABLE,   # lacework CLI installed (CodeSec/SBOM work)
         }).encode()
         self.send_json(200, body)
 

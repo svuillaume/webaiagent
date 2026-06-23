@@ -9,14 +9,15 @@ Web AI Agent is a browser-native AI security assistant: a Chrome extension (side
 
 ## Running the backend
 
-**Recommended — Docker:**
+**Recommended — Docker (minimal endpoint setup, everything self-contained):**
 ```bash
 docker compose up -d          # first run; builds the image
 docker compose up --build -d webai     # after any change to serve.py or chatbox.html
 docker compose down
 ```
+Only Docker needs to be installed — lacework CLI + SCA component are baked into the image.
 
-**Alternative — Python directly (no lacework scanning):**
+**Alternative — Python directly (macOS dev only, lacework CLI must be installed locally):**
 ```bash
 python3 serve.py              # http://localhost:8765
 ```

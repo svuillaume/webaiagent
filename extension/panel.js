@@ -128,23 +128,29 @@ async function autoFillFromConfig() {
   fill(keyInput,  'api_key',     'bf_key');
   if (cfg.gateway_url || cfg.api_key) setStatus('config loaded', 'ok');
 
-  const lwReady = cfg.lw_ready !== false;
-  const LW_CHIPS = ['codesec', 'compliance', 'lql', 'cve-btn'];
-  LW_CHIPS.forEach(id => {
+  const lwReady = cfg.lw_ready !== false;   // creds — LQL/CVE/Compliance
+  const lwCli   = cfg.lw_cli   !== false;   // CLI binary — CodeSec/SBOM
+
+  // CodeSec/SBOM need the lacework CLI binary for SCA scanning
+  [['codesec', lwCli,   '⚠ lacework CLI not installed — CodeSec unavailable'],
+   ['compliance', lwReady, '⚠ FortiCNAPP credentials not found (add ~/.lacework.toml)'],
+   ['lql',        lwReady, '⚠ FortiCNAPP credentials not found (add ~/.lacework.toml)'],
+   ['cve-btn',    lwReady, '⚠ FortiCNAPP credentials not found (add ~/.lacework.toml)'],
+  ].forEach(([id, enabled, tip]) => {
     const btn = el(id);
     if (!btn) return;
-    if (!lwReady) {
+    if (!enabled) {
       btn.classList.add('lw-disabled');
-      btn.title = btn.title.replace('🔑 Requires FortiCNAPP API key', '⚠ FortiCNAPP credentials not found (add ~/.lacework.toml)');
+      btn.title = tip;
     } else {
       btn.classList.remove('lw-disabled');
     }
   });
   const fcBtn = el('fcnapp-btn');
   if (fcBtn) {
-    fcBtn.title = lwReady
+    fcBtn.title = (lwReady && lwCli)
       ? 'FortiCNAPP tools'
-      : 'FortiCNAPP tools — ⚠ backend credentials not found (add ~/.lacework.toml)';
+      : 'FortiCNAPP tools — ⚠ some features unavailable (see individual buttons)';
   }
 }
 

@@ -61,6 +61,39 @@ if [ ! -f extension/config.json ]; then
   cp extension/config.json.tpl extension/config.json
 fi
 
+# ── Step 2b: lacework CLI + credentials check ────────────────────────────────
+echo ""
+info "Checking FortiCNAPP / lacework prerequisites..."
+
+LW_CLI_OK=false
+LW_TOML_OK=false
+
+if command -v lacework >/dev/null 2>&1; then
+  info "lacework CLI found ($(lacework version 2>/dev/null | head -1))"
+  LW_CLI_OK=true
+else
+  warn "lacework CLI not found — CodeSec and SBOM scanning will be unavailable."
+  echo "    Install it with:"
+  echo "      curl -sL https://raw.githubusercontent.com/lacework/go-sdk/main/cli/install.sh | bash"
+  echo "    Then run:  lacework configure"
+fi
+
+TOML="${HOME}/.lacework.toml"
+if [ -f "$TOML" ] && grep -q 'api_key' "$TOML" && grep -q 'api_secret' "$TOML"; then
+  ACCOUNT=$(grep 'account' "$TOML" | head -1 | cut -d= -f2 | tr -d ' "')
+  info "lacework credentials found (~/.lacework.toml, account: ${ACCOUNT})"
+  LW_TOML_OK=true
+else
+  warn "~/.lacework.toml not found or incomplete — LQL, CVE, and Compliance will be unavailable."
+  echo "    Run:  lacework configure"
+  echo "    (You need your FortiCNAPP account name + API key/secret)"
+fi
+
+if [ "$LW_CLI_OK" = false ] && [ "$LW_TOML_OK" = false ]; then
+  echo ""
+  warn "No FortiCNAPP integration available. Web AI Agent will run in chat-only mode."
+fi
+
 # ── Step 3: start Web AI Agent ────────────────────────────────────────────────
 echo ""
 info "Checking Docker runtime..."
