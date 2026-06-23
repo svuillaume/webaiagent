@@ -283,34 +283,49 @@ function appendTurn(role, text = '') {
     if (role === 'ai') setRendered(body, renderMarkdown(text));
     else               body.textContent = text;
   }
-  col.append(lbl, body);
   turn.append(avatar, col);
 
-  // For user turns: clear the latest pane first (start of new exchange)
-  if (role === 'user') el('log-latest').innerHTML = '';
+  if (role === 'user') {
+    col.append(lbl, body);
+    _appendToLog(turn);
+    return body;
+  }
 
   // ai turn: body is live-updated during streaming — keep a reference in both panes
   if (role === 'ai') {
-    const bodyClone = Object.assign(document.createElement('div'), { className: 'content' });
-    const colClone  = Object.assign(document.createElement('div'), { className: 'bubble-col' });
-    const lblClone  = Object.assign(document.createElement('div'), { className: 'turn-label', textContent: 'Web AI Agent' });
-    const avatarClone = Object.assign(document.createElement('div'), { className: 'role ai', textContent: 'AI' });
-    const turnClone = Object.assign(document.createElement('div'), { className: 'turn turn-ai' });
-    colClone.append(lblClone, bodyClone);
+    const makeCopyBtn = (targetBody) => {
+      const btn = Object.assign(document.createElement('button'), {
+        className: 'bubble-copy-btn',
+        textContent: '⎘',
+        title: 'Copy response',
+      });
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(targetBody.innerText || targetBody.textContent || '');
+        btn.textContent = '✓';
+        setTimeout(() => { btn.textContent = '⎘'; }, 1500);
+      });
+      return btn;
+    };
+
+    const copyBtn      = makeCopyBtn(body);
+    const bodyClone    = Object.assign(document.createElement('div'), { className: 'content' });
+    const copyBtnClone = makeCopyBtn(bodyClone);
+    const colClone     = Object.assign(document.createElement('div'), { className: 'bubble-col' });
+    const lblClone     = Object.assign(document.createElement('div'), { className: 'turn-label', textContent: 'Web AI Agent' });
+    const avatarClone  = Object.assign(document.createElement('div'), { className: 'role ai', textContent: 'AI' });
+    const turnClone    = Object.assign(document.createElement('div'), { className: 'turn turn-ai' });
+
+    col.append(lbl, body, copyBtn);
+    colClone.append(lblClone, bodyClone, copyBtnClone);
     turnClone.append(avatarClone, colClone);
 
     el('log-latest').appendChild(turn);
     el('log-all').appendChild(turnClone);
     scrollLog();
 
-    // Keep both bodies in sync during streaming
-    const origSetRendered = body._setRendered;
     body._allBody = bodyClone;
     return body;
   }
-
-  _appendToLog(turn);
-  return body;
 }
 const resizePrompt = () => {
   const p = el('prompt');
