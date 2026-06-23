@@ -62,7 +62,7 @@ FortiCNAPP credentials: run `lacework configure` — stored in `~/.lacework.toml
 
 ---
 
-## Manual Docker commands
+## Manual Docker commands (these are managed in setup.sh) 
 
 ```bash
 docker compose up -d                       # start all services
