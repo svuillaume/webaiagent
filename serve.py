@@ -800,6 +800,11 @@ CRITICAL RULES — violations cause parse errors:
 - NEVER use CONTAINS() function — use LIKE '%value%' instead
 - NEVER use timespan(), interval(), NOW(), DATEADD(), DATE_SUB(), DATEDIFF(), or any SQL-style date functions — they do NOT exist in LQL
 - RLIKE: keyword form only — FIELD RLIKE 'regex'   (never RLIKE(field, 'regex'))
+- REGION FILTERS: RLIKE does NOT work on RESOURCE_REGION in LW_CFG_* datasources — use LIKE or = instead
+  BAD:  RESOURCE_REGION RLIKE '^ca-'
+  GOOD: RESOURCE_REGION LIKE 'ca-%'          (prefix match for all Canada regions)
+  GOOD: RESOURCE_REGION = 'ca-central-1'     (exact match)
+  For multiple regions use: RESOURCE_REGION IN ('ca-central-1', 'ca-west-1')
 
 TIME COMPARISONS — ONLY sec_to_timestamp(epoch) works:
   sec_to_timestamp(n)  → converts a hardcoded Unix epoch number to a Timestamp for comparison
@@ -1054,34 +1059,29 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 raw = raw[brace:]
             return json.loads(raw)
 
-        def _run_lql(query_text):
-            """Run query for real. Returns (rows, error_string). rows=None on error."""
+        def _validate_lql(query_text):
+            """Validate query syntax only (no data read). Returns error string or None on success."""
             if not shutil.which('lacework'):
-                return None, None  # no CLI — skip pre-run, let extension call /lql/run normally
-            now   = datetime.now(timezone.utc)
-            start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
-            end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+                return None  # no CLI available — skip validation, let the run step catch errors
             tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.lql', delete=False)
             tmp.write(query_text); tmp.close()
             try:
-                cmd = ['lacework', 'query', 'run', '-f', tmp.name,
-                       '--start', start, '--end', end, '--json']
+                cmd = ['lacework', 'query', 'run', '-f', tmp.name, '--validate_only']
                 if LW_PROFILE:
                     cmd += ['--profile', LW_PROFILE]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-                if r.returncode == 0 and r.stdout.strip():
-                    raw  = json.loads(r.stdout)
-                    rows = raw.get('data', raw) if isinstance(raw, dict) else raw
-                    return (rows if isinstance(rows, list) else []), None
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+                if r.returncode == 0:
+                    return None  # valid
                 err = (r.stderr or r.stdout or '').strip()
+                # extract the first meaningful error line
                 for line in err.splitlines():
                     if 'Error:' in line or 'Unable to' in line or 'error' in line.lower():
-                        return None, line.strip()
-                return None, err[-300:] if err else 'query failed'
+                        return line.strip()
+                return err[-300:] if err else 'validation failed'
             except subprocess.TimeoutExpired:
-                return None, 'query timed out'
+                return 'validation timed out'
             except Exception as e:
-                return None, str(e)
+                return str(e)
             finally:
                 os.unlink(tmp.name)
 
@@ -1089,26 +1089,23 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             messages = [{'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'}]
             result = _call_claude(messages)
 
-            # run-then-fix loop — up to 3 attempts; caches real results on success
+            # validate-then-fix loop — up to 3 attempts
+            # each round: validate syntax with --validate_only; on error send the message back to Claude to fix
             MAX_RETRIES = 3
-            cached_rows = None
             for attempt in range(MAX_RETRIES):
                 query_text = result.get('queryText', '')
                 if not query_text or result.get('queryId') == 'USE_CVE_TAB':
-                    break
-                rows, err = _run_lql(query_text)
+                    break  # CVE routing or empty query — no validation needed
+                err = _validate_lql(query_text)
                 if err is None:
-                    cached_rows = rows  # success — cache results
-                    break
+                    break  # query is syntactically valid
                 if attempt < MAX_RETRIES - 1:
                     messages.append({'role': 'assistant', 'content': json.dumps(result)})
-                    messages.append({'role': 'user', 'content': f'That query failed with this error:\n{err}\n\nFix the LQL and return a corrected JSON object only.'})
+                    messages.append({'role': 'user', 'content': (
+                        f'That LQL query failed validation with this error:\n{err}\n\n'
+                        'Fix the LQL syntax and return only the corrected JSON object.'
+                    )})
                     result = _call_claude(messages)
-
-            if cached_rows is not None:
-                result['rows']  = cached_rows
-                result['count'] = len(cached_rows)
-                result['total'] = len(cached_rows)
 
             self.send_json(200, json.dumps(result).encode())
         except urllib.error.HTTPError as e:
