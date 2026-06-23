@@ -24,6 +24,10 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 info "Python $(python3 --version 2>&1 | cut -d' ' -f2) found"
 
+# ── Python dependencies ────────────────────────────────────────────────────────
+info "Installing Python dependencies..."
+python3 -m pip install --quiet -r requirements.txt || warn "pip install failed — server may not start correctly."
+
 # ── Step 1: .env ──────────────────────────────────────────────────────────────
 write_env_key() {
   local key="$1" value="$2"

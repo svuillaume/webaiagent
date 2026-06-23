@@ -232,7 +232,15 @@ if (-not $LwCliOk -or -not $LwTomlOk) {
 }
 
 # ═══════════════════════════════════════════════════════════════
-Step 6 "Start the AI Agent server"
+Step 6 "Install Python dependencies"
+# ═══════════════════════════════════════════════════════════════
+Note "Installing required Python packages (defusedxml for safe XML parsing)..."
+& $PyCmd -m pip install --quiet -r requirements.txt
+if ($LASTEXITCODE -ne 0) { Warn "pip install failed — server may not start correctly." }
+else { Info "Dependencies installed." }
+
+# ═══════════════════════════════════════════════════════════════
+Step 7 "Start the AI Agent server"
 # ═══════════════════════════════════════════════════════════════
 Note "Starting serve.py on http://localhost:45321 ..."
 Note "Logs: .\serve.log   Errors: .\serve.err"
@@ -263,7 +271,7 @@ if (-not $ready) {
 }
 
 # ═══════════════════════════════════════════════════════════════
-Step 7 "Load the Chrome extension"
+Step 8 "Load the Chrome extension"
 # ═══════════════════════════════════════════════════════════════
 Note "The extension is a local folder — Chrome loads it in Developer mode."
 Write-Host ""

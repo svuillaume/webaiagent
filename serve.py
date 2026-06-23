@@ -61,7 +61,10 @@ _fg_cache: dict = {'items': [], 'ts': 0.0}
 def _fg_outbreaks_cached():
     """Fetch and parse FortiGuard outbreak RSS, cache for 30 min. Returns list of items."""
     import re as _re
-    import xml.etree.ElementTree as _et
+    try:
+        import defusedxml.ElementTree as _et
+    except ImportError:
+        import xml.etree.ElementTree as _et
     from email.utils import parsedate_to_datetime
 
     now = datetime.now(timezone.utc).timestamp()
