@@ -1731,18 +1731,15 @@ el('lql-gen-btn').addEventListener('click', async () => {
 
   const btn      = el('lql-gen-btn');
   const statusEl = el('lql-gen-status');
-  const preview  = el('lql-gen-preview');
-  const codeEl   = el('lql-gen-code');
 
-  btn.disabled          = true;
-  statusEl.textContent  = 'building…';
-  statusEl.className    = '';
-  preview.style.display = 'none';
-  _genQueryText         = '';
+  btn.disabled         = true;
+  statusEl.textContent = 'running…';
+  statusEl.className   = '';
+  _genQueryText        = '';
+  el('lql-gen-results').innerHTML = '';
 
   try {
-    // Step 1 — generate
-    const genRes  = await fetch(BASE_URL + '/lql/generate', {
+    const genRes = await fetch(BASE_URL + '/lql/generate', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ objective }),
@@ -1751,19 +1748,13 @@ el('lql-gen-btn').addEventListener('click', async () => {
     if (data.error) throw new Error(data.error);
 
     if (data.queryId === 'USE_CVE_TAB') {
-      statusEl.textContent  = '⚠ Use CVE tab';
-      statusEl.className    = 'err';
-      preview.style.display = '';
-      codeEl.textContent    = `-- ℹ  Not an LQL query\n--\n-- ${data.note || 'CVE vulnerability data lives in the CVE tab, not LQL.'}`;
-      _genQueryText = '';
+      statusEl.textContent = '⚠ Use CVE tab';
+      statusEl.className   = 'err';
       el('lql-gen-results').innerHTML = `<div class="lql-row-note" style="padding:8px 2px;color:var(--dim)">${data.note || ''}</div>`;
       return;
     }
 
-    _genQueryText         = data.queryText || '';
-    codeEl.textContent    = `-- ${data.queryId}\n\n${_genQueryText}`;
-    preview.style.display = '';
-    el('lql-gen-results').innerHTML = '';
+    _genQueryText = data.queryText || '';
 
     // Use pre-run cached rows from generate, or fall back to a separate /lql/run call
     let runData;
