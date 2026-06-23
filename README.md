@@ -37,9 +37,8 @@ A Chrome side-panel extension that brings AI chat and FortiCNAPP cloud security 
 The script handles everything interactively:
 
 1. Creates `.env` from template — prompts for `ANTHROPIC_BASE_URL` and gateway key
-2. Detects if port 8080 is occupied and offers to free it
-3. Starts Docker services (or falls back to Python if Docker isn't running)
-4. Waits for services to be healthy
+2. Starts Docker (or falls back to Python if Docker isn't running)
+3. Waits for the service to be healthy
 
 On Windows: `setup.ps1`
 
@@ -55,7 +54,6 @@ Copy `.env.tpl` → `.env` and fill in:
 | `BIFROST_VIRTUAL_KEY` | Gateway virtual key (`sk-bf-…`) |
 | `ANTHROPIC_DEFAULT_MODEL` | Model for chat and LQL generate (default: `claude-haiku-4-5`) |
 | `LQL_QUERIES_DIR` | Path to `.yaml` LQL query files (mounted at `/lql_queries` in Docker) |
-| `SEARXNG_URL` | Optional legacy search proxy; set to `http://searxng:8080` in Docker |
 
 FortiCNAPP credentials: run `lacework configure` — stored in `~/.lacework.toml`, mounted read-only into the container.
 
@@ -97,7 +95,6 @@ The extension auto-fills its config from `GET /config` on `localhost:8765` at st
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/config` | Gateway URL, key, `lw_ready` flag |
-| GET | `/search?q=…` | SearXNG proxy (optional legacy) |
 | POST | `/proxy/v1/*` | Proxy to AI gateway |
 | POST | `/codesec` | SCA + SAST scan |
 | POST | `/sbom` | CycloneDX SBOM |

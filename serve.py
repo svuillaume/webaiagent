@@ -4,7 +4,6 @@ Local proxy + static server for chatbox.html and the Chrome extension.
 
 GET  /              → chatbox.html
 GET  /config        → gateway URL, key, lw_ready flag
-GET  /search?q=…    → SearXNG proxy (optional legacy; extension now uses Anthropic web search)
 POST /proxy/v1/*    → proxy to AI gateway upstream
 POST /codesec       → lacework SCA+SAST on submitted code
 POST /sbom          → CycloneDX SBOM via lacework SCA
@@ -41,7 +40,6 @@ def load_env():
 
 env             = load_env()
 VIRTUAL_KEY     = env.get('BIFROST_VIRTUAL_KEY', '')
-SEARXNG_URL     = env.get('SEARXNG_URL', 'http://localhost:8080')
 UPSTREAM        = env.get('ANTHROPIC_BASE_URL', 'https://your-gateway-endpoint/anthropic')
 MODEL           = env.get('ANTHROPIC_DEFAULT_MODEL', 'claude-haiku-4-5')
 LQL_QUERIES_DIR = env.get('LQL_QUERIES_DIR', '')
@@ -89,8 +87,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_html()
         elif self.path == '/config':
             self.serve_config()
-        elif self.path.startswith('/search'):
-            self.serve_search()
         elif self.path == '/compliance/list':
             self.serve_compliance_list()
         elif self.path == '/compliance/latest-text':
@@ -139,24 +135,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         body = json.dumps({
             'gateway_url': env.get('ANTHROPIC_BASE_URL', ''),
             'api_key':     VIRTUAL_KEY,
-            'searxng_url': SEARXNG_URL,
             'lw_ready':    LW_READY,
         }).encode()
         self.send_json(200, body)
-
-    def serve_search(self):
-        params = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
-        query  = params.get('q', [''])[0]
-        if not query:
-            self.send_error(400, 'Missing q parameter')
-            return
-        url = f"{SEARXNG_URL}/search?q={urllib.parse.quote(query)}&format=json&language=en"
-        try:
-            req  = urllib.request.Request(url, headers={'User-Agent': 'WebAIAgent/1.0'})
-            resp = urllib.request.urlopen(req, timeout=10)
-            self.send_json(200, resp.read())
-        except urllib.error.HTTPError as e:
-            self.send_error(e.code, str(e))
 
     def proxy_upstream(self):
         url    = UPSTREAM + self.path[len('/proxy'):]
@@ -1146,7 +1127,6 @@ print(f'Gateway          →  {UPSTREAM.rstrip("/")}/v1/*  key:{"ok" if VIRTUAL_
 print(f'CodeSec/SBOM     →  {lw_status}')
 print(f'Compliance       →  {lw_status}')
 print(f'LQL queries dir  →  {LQL_QUERIES_DIR or "WARNING: LQL_QUERIES_DIR not set in .env"}')
-print(f'Search proxy     →  /search → {SEARXNG_URL}  (legacy; extension uses Anthropic web search)')
 
 socketserver.TCPServer.allow_reuse_address = True
 with socketserver.TCPServer(('', PORT), Handler) as httpd:

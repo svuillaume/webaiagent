@@ -18,8 +18,8 @@ if docker info >/dev/null 2>&1; then
   info "Stopping containers..."
   docker compose down --remove-orphans
 
-  # Kill anything still holding port 8080 or 8765
-  for PORT in 8080 8765; do
+  # Kill anything still holding port 8765
+  for PORT in 8765; do
     PIDS=$(lsof -ti:$PORT 2>/dev/null || true)
     if [ -n "$PIDS" ]; then
       warn "Port $PORT still in use (PID $PIDS) — killing..."

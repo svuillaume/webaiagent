@@ -34,49 +34,21 @@ if (-not (Test-Path "extension\config.json")) {
     Copy-Item "extension\config.json.tpl" "extension\config.json"
 }
 
-# ── Step 3: Docker check + SearXNG (always) ───────────────────────────────
+# ── Step 3: start Web AI Agent ────────────────────────────────────────────
 $DockerAvailable = $false
 try {
     docker info 2>&1 | Out-Null
     $DockerAvailable = $true
     Info "Docker found"
 } catch {
-    Warn "Docker is not running — skipping SearXNG. Start Docker Desktop to enable web search."
+    Warn "Docker is not running — will use Python directly."
 }
 
-if ($DockerAvailable) {
-    if (-not (Test-Path "searxng\settings.yml")) {
-        Info "Generating SearXNG config..."
-        New-Item -ItemType Directory -Force -Path "searxng" | Out-Null
-        $secret = -join ((48..57) + (97..102) | Get-Random -Count 64 | ForEach-Object { [char]$_ })
-        (Get-Content "searxng.settings.yml.tpl") -replace "REPLACE_WITH_RANDOM_SECRET", $secret |
-            Set-Content "searxng\settings.yml"
-        Info "searxng\settings.yml created"
-    } else {
-        Info "searxng\settings.yml already exists — skipping"
-    }
-
-    Info "Starting SearXNG..."
-    docker compose up -d searxng
-
-    Write-Host "  Waiting for SearXNG" -NoNewline
-    for ($i = 0; $i -lt 15; $i++) {
-        try {
-            $r = Invoke-WebRequest "http://localhost:8080/search?q=test&format=json" -UseBasicParsing -TimeoutSec 2
-            if ($r.StatusCode -eq 200) { Write-Host " OK"; break }
-        } catch {}
-        Write-Host "." -NoNewline
-        Start-Sleep 1
-    }
-    Info "SearXNG running at http://localhost:8080"
-}
-
-# ── Step 4: serve.py (Docker or Python) ──────────────────────────────────
 if ($DockerAvailable) {
     Write-Host ""
     Write-Host "  How do you want to run Web AI Agent?"
     Write-Host ""
-    Write-Host "  [1] Docker  — All services in containers (recommended)"
+    Write-Host "  [1] Docker  — container (recommended)"
     Write-Host "  [2] Python  — serve.py locally (requires Python 3)"
     Write-Host ""
     $choice = Read-Host "  Enter 1 or 2 [default: 1]"
@@ -87,8 +59,8 @@ if ($DockerAvailable) {
 
 switch ($choice) {
     "1" {
-        Info "Building and starting all containers..."
-        docker compose up -d --build
+        Info "Building and starting Web AI Agent container..."
+        docker compose up -d --build webai
 
         Write-Host "  Waiting for Web AI Agent" -NoNewline
         for ($i = 0; $i -lt 20; $i++) {
@@ -115,7 +87,6 @@ switch ($choice) {
 
 Write-Host ""
 Write-Host "  Chatbox  ->  http://localhost:8765"
-Write-Host "  Search   ->  http://localhost:8080"
 Write-Host "  CodeSec  ->  POST http://localhost:8765/codesec"
 Write-Host "  SBOM     ->  POST http://localhost:8765/sbom"
 Write-Host ""

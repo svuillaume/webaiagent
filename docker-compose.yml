@@ -1,13 +1,4 @@
 services:
-  searxng:
-    image: searxng/searxng:latest
-    container_name: webai-search
-    ports:
-      - "8080:8080"
-    volumes:
-      - ./searxng:/etc/searxng
-    restart: unless-stopped
-
   webai:
     build: .
     container_name: webai-serve
@@ -16,11 +7,7 @@ services:
     env_file:
       - .env
     volumes:
-      # Mount lacework credentials so the container can authenticate
       - ~/.lacework.toml:/root/.lacework.toml:ro
-      # Mount lacework components cache to avoid re-downloading every start
       - ~/.config/lacework:/root/.config/lacework
       - ~/claude_cnapp/lql/lql_queries:/lql_queries:ro
-    depends_on:
-      - searxng
     restart: unless-stopped

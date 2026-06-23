@@ -46,7 +46,6 @@ const GATEWAYS = {
     urlHint:  'https://anthropic.helicone.ai',
     keyHint:  'sk-ant-… (Anthropic key)',
     keyLabel: 'ant-key',
-    // searchInput holds the Helicone auth key (secondary field, reused)
     headers: (key, heliconeKey) => ({
       'Content-Type':      'application/json',
       'x-api-key':         key,
@@ -66,7 +65,7 @@ let busy = false;
 const el          = id => document.getElementById(id);
 const urlInput    = el('url-input');
 const keyInput    = el('key-input');
-const searchInput = el('search-input'); // hidden — holds Helicone secondary auth key
+const key2Input   = el('key2-input');   // hidden — holds Helicone secondary auth key
 
 const setStatus = (text, state = '') => {
   el('status').textContent = text;
@@ -76,10 +75,10 @@ const setStatus = (text, state = '') => {
 // ── Storage ───────────────────────────────────────────────────────────────
 // URL + key → session storage (RAM only, cleared on Chrome close).
 // Model/gateway → local storage (persists, not sensitive).
-chrome.storage.session.get(['bf_url', 'bf_key', 'bf_search'], ({ bf_url, bf_key, bf_search }) => {
-  if (bf_url)    urlInput.value    = bf_url;
-  if (bf_key)    keyInput.value    = bf_key;
-  if (bf_search) searchInput.value = bf_search;
+chrome.storage.session.get(['bf_url', 'bf_key', 'bf_key2'], ({ bf_url, bf_key, bf_key2 }) => {
+  if (bf_url)  urlInput.value  = bf_url;
+  if (bf_key)  keyInput.value  = bf_key;
+  if (bf_key2) key2Input.value = bf_key2;
   if (!bf_url || !bf_key) autoFillFromConfig();
 });
 chrome.storage.local.get(['bf_model', 'bf_gateway'], ({ bf_model, bf_gateway }) => {
@@ -125,9 +124,8 @@ async function autoFillFromConfig() {
       chrome.storage.session.set({ [storeKey]: cfg[cfgKey] });
     }
   };
-  fill(urlInput,    'gateway_url', 'bf_url');
-  fill(keyInput,    'api_key',     'bf_key');
-  fill(searchInput, 'searxng_url', 'bf_search'); // reused as Helicone secondary key
+  fill(urlInput,  'gateway_url', 'bf_url');
+  fill(keyInput,  'api_key',     'bf_key');
   if (cfg.gateway_url || cfg.api_key) setStatus('config loaded', 'ok');
 
   const lwReady = cfg.lw_ready === true;
@@ -165,9 +163,9 @@ const saveSession = (key, input) => {
   v ? chrome.storage.session.set({ [key]: v }) : chrome.storage.session.remove(key);
 };
 
-urlInput.addEventListener('change',    () => saveSession('bf_url',    urlInput));
-keyInput.addEventListener('change',    () => saveSession('bf_key',    keyInput));
-searchInput.addEventListener('change', () => saveSession('bf_search', searchInput));
+urlInput.addEventListener('change',  () => saveSession('bf_url',  urlInput));
+keyInput.addEventListener('change',  () => saveSession('bf_key',  keyInput));
+key2Input.addEventListener('change', () => saveSession('bf_key2', key2Input));
 el('model').addEventListener('change', () => chrome.storage.local.set({ bf_model: el('model').value }));
 
 // ── Markdown renderer ─────────────────────────────────────────────────────
@@ -364,7 +362,7 @@ async function send(silent = false) {
 
   const gw      = el('gateway').value || 'bifrost';
   const profile = GATEWAYS[gw] || GATEWAYS.bifrost;
-  const headers = profile.headers(key, gw === 'helicone' ? searchInput.value.trim() : undefined);
+  const headers = profile.headers(key, gw === 'helicone' ? key2Input.value.trim() : undefined);
 
   try {
     setStatus('streaming…', 'busy');
