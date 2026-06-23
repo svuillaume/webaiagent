@@ -399,6 +399,21 @@ function render(t) {
   return t;
 }
 
+// ── Greeting ──────────────────────────────────────────────────────────────────
+(async () => {
+  const h = new Date().getHours();
+  const greet = h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening';
+  let name = '';
+  try {
+    const r = await fetch('/config');
+    if (r.ok) {
+      const cfg = await r.json();
+      if (cfg.user_name) name = ', ' + cfg.user_name.charAt(0).toUpperCase() + cfg.user_name.slice(1);
+    }
+  } catch { /* serve.py not running */ }
+  appendTurn('ai', `**${greet}${name}!** — I'm your Web AI chat Assistant - I also provide FortiCNAPP security tools in your browser.\n\nType anything to start.`);
+})();
+
 // ── Persist key ───────────────────────────────────────────────────────────────
 const ki = $('key-input');
 const saved = localStorage.getItem('bf_key');

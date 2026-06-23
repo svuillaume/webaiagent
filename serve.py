@@ -137,6 +137,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             'api_key':     VIRTUAL_KEY,
             'lw_ready':    LW_READY,
             'lw_cli':      LW_AVAILABLE,
+            'user_name':   _user_first_name(),
         }).encode()
         self.send_json(200, body)
 
@@ -1054,6 +1055,20 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
 
 
 LW_AVAILABLE = shutil.which('lacework') is not None
+
+def _user_first_name():
+    # .env override takes precedence
+    if env.get('USER_NAME'):
+        return env['USER_NAME'].split()[0]
+    # macOS: id -F returns full name (e.g. "Sam Vuillaume")
+    try:
+        full = subprocess.check_output(['id', '-F'], text=True, timeout=2).strip()
+        if full:
+            return full.split()[0]
+    except Exception:
+        pass
+    # Fallback: OS login name
+    return os.environ.get('USER') or os.environ.get('USERNAME') or ''
 
 def _lw_creds():
     account    = env.get('LW_ACCOUNT', '')
