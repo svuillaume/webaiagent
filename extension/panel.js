@@ -230,17 +230,36 @@ function setRendered(node, html) {
 function scrollLog() { const l = el('log'); l.scrollTop = l.scrollHeight; }
 
 function appendTurn(role, text = '') {
-  const turnClass = role === 'user' ? 'turn turn-user' : role === 'ai' ? 'turn turn-ai' : 'turn turn-system';
-  const turn  = Object.assign(document.createElement('div'), { className: turnClass });
-  const label = Object.assign(document.createElement('div'), {
-    className: `role ${role}`, textContent: ROLE_LABELS[role] ?? role,
+  const turn = Object.assign(document.createElement('div'), {
+    className: `turn turn-${role}`,
   });
-  const body  = Object.assign(document.createElement('div'), { className: 'content' });
+
+  if (role === 'system') {
+    const body = Object.assign(document.createElement('div'), { className: 'content' });
+    if (text) body.textContent = text;
+    turn.append(body);
+    el('log').appendChild(turn);
+    scrollLog();
+    return body;
+  }
+
+  const avatar = Object.assign(document.createElement('div'), {
+    className: `role ${role}`,
+    textContent: role === 'user' ? 'You' : 'AI',
+  });
+
+  const col = Object.assign(document.createElement('div'), { className: 'bubble-col' });
+  const lbl = Object.assign(document.createElement('div'), {
+    className: 'turn-label',
+    textContent: role === 'user' ? 'You' : 'Web AI Agent',
+  });
+  const body = Object.assign(document.createElement('div'), { className: 'content' });
   if (text) {
     if (role === 'ai') setRendered(body, renderMarkdown(text));
     else               body.textContent = text;
   }
-  turn.append(label, body);
+  col.append(lbl, body);
+  turn.append(avatar, col);
   el('log').appendChild(turn);
   scrollLog();
   return body;
