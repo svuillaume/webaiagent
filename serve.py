@@ -1054,25 +1054,34 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 raw = raw[brace:]
             return json.loads(raw)
 
-        def _validate_lql(query_text):
+        def _run_lql(query_text):
+            """Run query for real. Returns (rows, error_string). rows=None on error."""
             if not shutil.which('lacework'):
-                return None
-            tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False)
-            json.dump({'queryId': 'validate_tmp', 'queryText': query_text}, tmp)
-            tmp.close()
+                return None, None  # no CLI — skip pre-run, let extension call /lql/run normally
+            now   = datetime.now(timezone.utc)
+            start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+            tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.lql', delete=False)
+            tmp.write(query_text); tmp.close()
             try:
-                result = subprocess.run(
-                    ['lacework', 'query', 'run', '--validate_only', '-f', tmp.name],
-                    capture_output=True, text=True, timeout=20)
-                if result.returncode == 0:
-                    return None
-                err = (result.stderr or result.stdout or '').strip()
+                cmd = ['lacework', 'query', 'run', '-f', tmp.name,
+                       '--start', start, '--end', end, '--json']
+                if LW_PROFILE:
+                    cmd += ['--profile', LW_PROFILE]
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+                if r.returncode == 0 and r.stdout.strip():
+                    raw  = json.loads(r.stdout)
+                    rows = raw.get('data', raw) if isinstance(raw, dict) else raw
+                    return (rows if isinstance(rows, list) else []), None
+                err = (r.stderr or r.stdout or '').strip()
                 for line in err.splitlines():
-                    if 'Error:' in line or 'Unable to' in line:
-                        return line.strip()
-                return err[-300:] if err else 'validation failed'
+                    if 'Error:' in line or 'Unable to' in line or 'error' in line.lower():
+                        return None, line.strip()
+                return None, err[-300:] if err else 'query failed'
+            except subprocess.TimeoutExpired:
+                return None, 'query timed out'
             except Exception as e:
-                return str(e)
+                return None, str(e)
             finally:
                 os.unlink(tmp.name)
 
@@ -1080,19 +1089,26 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             messages = [{'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'}]
             result = _call_claude(messages)
 
-            # validate-then-fix loop — up to 3 attempts
+            # run-then-fix loop — up to 3 attempts; caches real results on success
             MAX_RETRIES = 3
+            cached_rows = None
             for attempt in range(MAX_RETRIES):
                 query_text = result.get('queryText', '')
                 if not query_text or result.get('queryId') == 'USE_CVE_TAB':
                     break
-                err = _validate_lql(query_text)
+                rows, err = _run_lql(query_text)
                 if err is None:
+                    cached_rows = rows  # success — cache results
                     break
                 if attempt < MAX_RETRIES - 1:
                     messages.append({'role': 'assistant', 'content': json.dumps(result)})
-                    messages.append({'role': 'user', 'content': f'That query failed validation with this error:\n{err}\n\nFix the LQL and return a corrected JSON object only.'})
+                    messages.append({'role': 'user', 'content': f'That query failed with this error:\n{err}\n\nFix the LQL and return a corrected JSON object only.'})
                     result = _call_claude(messages)
+
+            if cached_rows is not None:
+                result['rows']  = cached_rows
+                result['count'] = len(cached_rows)
+                result['total'] = len(cached_rows)
 
             self.send_json(200, json.dumps(result).encode())
         except urllib.error.HTTPError as e:

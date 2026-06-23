@@ -1765,17 +1765,21 @@ el('lql-gen-btn').addEventListener('click', async () => {
     preview.style.display = '';
     el('lql-gen-results').innerHTML = '';
 
-    // Step 2 — run immediately
-    statusEl.textContent = 'running…';
-    setStatus('running LQL…', 'busy');
-
-    const runRes  = await fetch(BASE_URL + '/lql/run', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ queryText: _genQueryText }),
-    });
-    const runData = await runRes.json();
-    if (runData.error) throw new Error(runData.error);
+    // Use pre-run cached rows from generate, or fall back to a separate /lql/run call
+    let runData;
+    if (data.rows !== undefined) {
+      runData = data; // serve.py already ran and cached results
+    } else {
+      statusEl.textContent = 'running…';
+      setStatus('running LQL…', 'busy');
+      const runRes = await fetch(BASE_URL + '/lql/run', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ queryText: _genQueryText }),
+      });
+      runData = await runRes.json();
+      if (runData.error) throw new Error(runData.error);
+    }
 
     const rows  = runData.rows || [];
     const count = runData.count ?? rows.length;
