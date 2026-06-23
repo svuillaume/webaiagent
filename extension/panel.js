@@ -1826,6 +1826,16 @@ async function runCveSearch() {
 
     appendResultCard('🔬', `CVE: ${cveId} — ${data.total_affected} hosts (${exp} exposed)`, resultsEl);
 
+    // Open FortiGuard PSIRT page for this CVE
+    chrome.tabs.create({ url: `https://www.fortiguard.com/psirt/${encodeURIComponent(cveId)}`, active: false });
+
+    // If part of an outbreak alert, open the outbreak page too
+    if (fgOutbreaks.length) {
+      const outbreakUrl = fgOutbreaks[0].link ||
+        `https://fortiguard.fortinet.com/outbreak-alert?date=&risk=&vendor=&type=vulnerability&sort=`;
+      chrome.tabs.create({ url: outbreakUrl, active: false });
+    }
+
     // Auto-trigger executive analysis with combined CNAPP + FortiGuard context
     const prompt = buildCveAnalysisPrompt(data, fgOutbreaks);
     history.push({ role: 'user', content: prompt });
