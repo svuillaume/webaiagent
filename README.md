@@ -1,6 +1,9 @@
-# Web AI Agent — Chrome Extension
+# Web AI Agent — Chrome Extension 
 
-An AI security assistant built into Chrome. Ask questions about any webpage, search the web, and run FortiCNAPP cloud security checks — all from a side panel without leaving your browser.
+I am your Web AI Security Agent integrating with your best AI Gateway platfrom (LLMlite, Portkey, Helicone, ...) built into Chrome and powered by FortiCNAPP for real-time code scanning and cloud security insights.
+
+Ask questions about any webpage, search the web, or run FortiCNAPP security checks — all from a side panel without leaving your browser.
+Use TL;DR mode to quickly summarize any page in seconds.
 
 ---
 
