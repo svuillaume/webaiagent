@@ -1467,12 +1467,11 @@ el('lql-gen-run').addEventListener('click', async () => {
 
   const btn      = el('lql-gen-run');
   const statusEl = el('lql-gen-run-status');
-  const resultsEl = el('lql-gen-results');
+  const label    = el('lql-objective').value || 'generated';
 
   btn.disabled         = true;
   statusEl.textContent = 'running…';
   statusEl.className   = '';
-  resultsEl.innerHTML  = '';
   setStatus('running LQL…', 'busy');
 
   try {
@@ -1494,26 +1493,31 @@ el('lql-gen-run').addEventListener('click', async () => {
     statusEl.className = count ? 'ok' : '';
     setStatus(`LQL: ${count} rows`, 'ok');
 
+    el('lql-panel').classList.remove('open');
+    const resultsEl = document.createElement('div');
+    resultsEl.className = 'lql-result-body';
+
     if (!rows.length) {
       resultsEl.innerHTML = '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
+      appendResultCard('📊', `LQL: ${label}`, resultsEl);
       return;
     }
 
-    renderLqlTable(resultsEl, rows, total, el('lql-objective').value || 'generated');
+    renderLqlTable(resultsEl, rows, total, label);
+    appendResultCard('📊', `LQL: ${label} — ${statusEl.textContent}`, resultsEl);
 
     const keys   = Object.keys(rows[0]);
     const sample = rows.slice(0, 50).map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
     history.push({
       role: 'user',
-      content: `I generated and ran an LQL query for "${el('lql-objective').value}" and got ${count} rows. Here is a sample:\n\n${sample}\n\nAnalyse these findings.`,
+      content: `I generated and ran an LQL query for "${label}" and got ${count} rows. Here is a sample:\n\n${sample}\n\nAnalyse these findings.`,
     });
     history.push({ role: 'assistant', content: 'Results loaded.' });
-    appendTurn('system', `✨ Generated LQL — ${count} rows loaded into context`);
   } catch (e) {
     statusEl.textContent = `✗ ${e.message}`;
     statusEl.className   = 'err';
     setStatus('LQL error', 'err');
-    resultsEl.innerHTML  = `<pre style="color:var(--err)">${e.message}</pre>`;
+    appendTurn('system', `LQL error: ${e.message}`);
   } finally {
     btn.disabled = false;
   }
