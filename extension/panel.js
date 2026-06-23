@@ -1734,72 +1734,53 @@ el('lql-gen-btn').addEventListener('click', async () => {
   const preview  = el('lql-gen-preview');
   const codeEl   = el('lql-gen-code');
 
-  btn.disabled         = true;
-  statusEl.textContent = 'building…';
-  statusEl.className   = '';
+  btn.disabled          = true;
+  statusEl.textContent  = 'building…';
+  statusEl.className    = '';
   preview.style.display = 'none';
-  _genQueryText        = '';
+  _genQueryText         = '';
 
   try {
-    const res  = await fetch(BASE_URL + '/lql/generate', {
+    // Step 1 — generate
+    const genRes  = await fetch(BASE_URL + '/lql/generate', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ objective }),
     });
-    const data = await res.json();
+    const data = await genRes.json();
     if (data.error) throw new Error(data.error);
 
-    // Server signals this belongs in the CVE tab, not LQL
     if (data.queryId === 'USE_CVE_TAB') {
-      statusEl.textContent = '⚠ Use CVE tab';
-      statusEl.className   = 'err';
+      statusEl.textContent  = '⚠ Use CVE tab';
+      statusEl.className    = 'err';
       preview.style.display = '';
-      codeEl.textContent   = `-- ℹ  Not an LQL query\n--\n-- ${data.note || 'CVE vulnerability data lives in the CVE tab, not LQL.'}`;
+      codeEl.textContent    = `-- ℹ  Not an LQL query\n--\n-- ${data.note || 'CVE vulnerability data lives in the CVE tab, not LQL.'}`;
       _genQueryText = '';
       el('lql-gen-results').innerHTML = `<div class="lql-row-note" style="padding:8px 2px;color:var(--dim)">${data.note || ''}</div>`;
-      el('lql-gen-run-status').textContent = '';
       return;
     }
 
     _genQueryText         = data.queryText || '';
     codeEl.textContent    = `-- ${data.queryId}\n\n${_genQueryText}`;
-    statusEl.textContent  = 'ready ✓';
-    statusEl.className    = 'ok';
     preview.style.display = '';
     el('lql-gen-results').innerHTML = '';
-    el('lql-gen-run-status').textContent = '';
-  } catch (e) {
-    statusEl.textContent = `✗ ${e.message}`;
-    statusEl.className   = 'err';
-  } finally {
-    btn.disabled = false;
-  }
-});
 
-el('lql-gen-run').addEventListener('click', async () => {
-  if (!_genQueryText) return;
+    // Step 2 — run immediately
+    statusEl.textContent = 'running…';
+    setStatus('running LQL…', 'busy');
 
-  const btn      = el('lql-gen-run');
-  const statusEl = el('lql-gen-run-status');
-  const label    = el('lql-objective').value || 'generated';
-
-  btn.disabled         = true;
-  statusEl.textContent = 'running…';
-  statusEl.className   = '';
-  setStatus('running LQL…', 'busy');
-
-  try {
-    const res  = await fetch(BASE_URL + '/lql/run', {
+    const runRes  = await fetch(BASE_URL + '/lql/run', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ queryText: _genQueryText }),
     });
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
+    const runData = await runRes.json();
+    if (runData.error) throw new Error(runData.error);
 
-    const rows  = data.rows || [];
-    const count = data.count ?? rows.length;
-    const total = data.total ?? count;
+    const rows  = runData.rows || [];
+    const count = runData.count ?? rows.length;
+    const total = runData.total ?? count;
+    const label = objective;
 
     statusEl.textContent = total > count
       ? `${count} rows (${total} total)`
@@ -1826,7 +1807,7 @@ el('lql-gen-run').addEventListener('click', async () => {
       role: 'user',
       content: `Security finding data from LQL query "${label}" — ${count} rows:\n\n${sample}\n\n${EXEC_REPORT_TEMPLATE}`,
     });
-    send(true); // auto-triggers executive analysis; user turn already pushed above
+    send(true);
   } catch (e) {
     statusEl.textContent = `✗ ${e.message}`;
     statusEl.className   = 'err';
