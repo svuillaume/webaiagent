@@ -1,1 +1,6 @@
 .env
+
+.serve.pid
+serve.log
+__pycache__/
+extension/config.json
