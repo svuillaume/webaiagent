@@ -2,7 +2,7 @@
 # Run with: .\setup.ps1
 # Requires PowerShell 5.1+ (built into Windows 10/11)
 
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = 'Continue'
 
 function Info  { param($msg) Write-Host "  [OK] $msg" -ForegroundColor Green }
 function Warn  { param($msg) Write-Host "  [!]  $msg" -ForegroundColor Yellow }
@@ -141,11 +141,12 @@ Info "Starting Web AI Agent (serve.py)..."
 $proc = Start-Process $PyCmd -ArgumentList "serve.py" -NoNewWindow -PassThru -RedirectStandardOutput "serve.log" -RedirectStandardError "serve.err"
 $proc.Id | Out-File ".serve.pid" -Encoding ascii
 
+$ready = $false
 Write-Host "  Waiting for server" -NoNewline
 for ($i = 0; $i -lt 20; $i++) {
     try {
         $r = Invoke-WebRequest "http://localhost:45321/config" -UseBasicParsing -TimeoutSec 2
-        if ($r.StatusCode -eq 200) { Write-Host " OK"; break }
+        if ($r.StatusCode -eq 200) { Write-Host " OK"; $ready = $true; break }
     } catch {}
     Write-Host "." -NoNewline
     Start-Sleep 1
@@ -153,10 +154,15 @@ for ($i = 0; $i -lt 20; $i++) {
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "  [OK] Web AI Agent ready!" -ForegroundColor Green
+if ($ready) {
+    Write-Host "  [OK] Web AI Agent ready!" -ForegroundColor Green
+} else {
+    Write-Host "  [!]  Server did not respond in time. Check .\serve.err for errors." -ForegroundColor Yellow
+}
 Write-Host ""
 Write-Host "  Chatbox  ->  http://localhost:45321"
 Write-Host "  Log      ->  .\serve.log"
+Write-Host "  Errors   ->  .\serve.err"
 Write-Host "  Stop     ->  Stop-Process -Id $(Get-Content .serve.pid)"
 Write-Host ""
 Write-Host "  Load the Chrome extension:" -ForegroundColor Cyan
