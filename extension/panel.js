@@ -1561,21 +1561,79 @@ el('cve-analyse').addEventListener('click', () => {
 const EXEC_REPORT_TEMPLATE = `Write the full security report using the structure defined in your system prompt.`;
 
 function buildCveAnalysisPrompt(d, fgOutbreaks) {
-  const fixVer = d.hosts.find(h => h.fix_available)?.fixed_version || 'latest';
+  const intel        = d.cveIntel || {};
+  const fixVer       = d.hosts.find(h => h.fix_available)?.fixed_version || 'latest';
   const fgSearchUrl  = `https://www.fortiguard.com/search?q=${encodeURIComponent(d.cveId)}`;
   const nvdUrl       = `https://nvd.nist.gov/vuln/detail/${d.cveId}`;
 
   const lines = [
-    `Security finding data for ${d.cveId}:`,
-    ``,
-    `Threat Intelligence References:`,
-    `  FortiGuard search: ${fgSearchUrl}`,
-    `  NVD detail:        ${nvdUrl}`,
-    ``,
-    `FortiCNAPP Exposure Scope: ${d.total_affected} hosts affected, ${d.internet_exposed} internet-exposed, ${d.fixable} fixable (last ${d.period_days} days).`,
+    `=== CVE THREAT INTELLIGENCE REPORT: ${d.cveId} ===`,
     ``,
   ];
 
+  // ── Threat Radar ──────────────────────────────────────────────────────────
+  if (intel.threatRadarScore !== undefined) {
+    lines.push(`Threat Radar Score: ${intel.threatRadarScore}/100 (composite: CVSS + EPSS + KEV + FortiGuard)`);
+  }
+
+  // ── NVD CVSS ──────────────────────────────────────────────────────────────
+  if (intel.nvd) {
+    const n = intel.nvd;
+    lines.push(``,`--- NVD / CVSS ---`);
+    if (n.cvssV3Score)    lines.push(`  CVSSv3 Score:    ${n.cvssV3Score} (${n.cvssV3Severity})`);
+    if (n.cvssV3Vector)   lines.push(`  CVSSv3 Vector:   ${n.cvssV3Vector}`);
+    if (n.cvssV2Score)    lines.push(`  CVSSv2 Score:    ${n.cvssV2Score}`);
+    if (n.description)    lines.push(`  Description:     ${n.description}`);
+    if (n.published)      lines.push(`  Published:       ${n.published.slice(0,10)}`);
+    lines.push(`  NVD URL:         ${nvdUrl}`);
+  }
+
+  // ── EPSS ──────────────────────────────────────────────────────────────────
+  if (intel.epss) {
+    const e = intel.epss;
+    lines.push(``,`--- EPSS (Exploit Prediction Scoring System) ---`);
+    lines.push(`  EPSS Score:      ${(e.score * 100).toFixed(2)}%  (probability of exploitation in next 30 days)`);
+    lines.push(`  EPSS Percentile: ${(e.percentile * 100).toFixed(1)}th percentile among all CVEs`);
+    if (e.date) lines.push(`  As of:           ${e.date}`);
+  }
+
+  // ── CISA KEV ──────────────────────────────────────────────────────────────
+  if (intel.kev) {
+    lines.push(``,`--- CISA Known Exploited Vulnerabilities (KEV) ---`);
+    if (intel.kev.inKev) {
+      lines.push(`  ⚠ IN CISA KEV — actively exploited in the wild`);
+      if (intel.kev.product)     lines.push(`  Product:   ${intel.kev.vendorProject} ${intel.kev.product}`);
+      if (intel.kev.dateAdded)   lines.push(`  Added:     ${intel.kev.dateAdded}`);
+      if (intel.kev.dueDate)     lines.push(`  FCEB Due:  ${intel.kev.dueDate}`);
+      if (intel.kev.description) lines.push(`  Details:   ${intel.kev.description}`);
+    } else {
+      lines.push(`  Not in CISA KEV catalog`);
+    }
+  }
+
+  // ── FortiGuard ────────────────────────────────────────────────────────────
+  lines.push(``,`--- FortiGuard Threat Intelligence ---`);
+  lines.push(`  FortiGuard Search: ${fgSearchUrl}`);
+  if (fgOutbreaks && fgOutbreaks.length) {
+    fgOutbreaks.forEach(o => {
+      lines.push(`  Outbreak: ${o.title}`);
+      if (o.risk)    lines.push(`    Risk:      ${o.risk}`);
+      if (o.pubDate) lines.push(`    Published: ${o.pubDate.slice(0, 10)}`);
+      if (o.summary) lines.push(`    Summary:   ${o.summary}`);
+      if (o.link)    lines.push(`    URL:       ${o.link}`);
+    });
+  } else {
+    lines.push(`  No active FortiGuard outbreak alert for this CVE.`);
+  }
+
+  // ── FortiCNAPP Exposure ───────────────────────────────────────────────────
+  lines.push(
+    ``,`--- FortiCNAPP Exposure (last ${d.period_days} days) ---`,
+    `  Total affected: ${d.total_affected} hosts`,
+    `  Internet-exposed: ${d.internet_exposed}`,
+    `  Fixable: ${d.fixable}`,
+    ``,
+  );
   d.hosts.forEach((h, i) => {
     const flags = [
       h.host_exposed      ? 'HOST-EXPOSED'      : '',
@@ -1587,31 +1645,17 @@ function buildCveAnalysisPrompt(d, fgOutbreaks) {
     h.containers.forEach(c => lines.push(`   ctr: ${c.name}${c.internet_exposed ? ' 🌐 INTERNET-EXPOSED' : ''}`));
   });
 
-  if (fgOutbreaks && fgOutbreaks.length) {
-    lines.push(``, `--- FortiGuard Outbreak Alerts (correlated to ${d.cveId}) ---`);
-    fgOutbreaks.forEach(o => {
-      lines.push(`Outbreak: ${o.title}`);
-      if (o.risk)    lines.push(`  Risk:      ${o.risk}`);
-      if (o.pubDate) lines.push(`  Published: ${o.pubDate.slice(0, 10)}`);
-      if (o.summary) lines.push(`  Summary:   ${o.summary}`);
-      if (o.link)    lines.push(`  URL:       ${o.link}`);
-    });
-    lines.push(
-      ``,
-      `IMPORTANT: Your report MUST include a "FortiGuard Threat Correlation" section that:`,
-      `  1. Summarises the outbreak alert(s) above and links to each URL`,
-      `  2. Maps MITRE ATT&CK techniques from the outbreak intel to the affected hosts`,
-      `  3. Explains how the FortiGuard findings change the priority of this CVE`,
-    );
-  } else {
-    lines.push(
-      ``,
-      `No active FortiGuard outbreak alert found for ${d.cveId}.`,
-      `Include the FortiGuard search link (${fgSearchUrl}) and NVD link in the References section of the report.`,
-    );
-  }
-
-  lines.push(``, EXEC_REPORT_TEMPLATE);
+  lines.push(
+    ``,
+    `IMPORTANT REPORTING INSTRUCTIONS:`,
+    `  1. Include a "Threat Radar" section combining CVSS + EPSS + KEV + FortiGuard score`,
+    `  2. Include a "FortiGuard Threat Correlation" section — reference outbreak URLs, map MITRE TTPs`,
+    `  3. Call out CISA KEV status prominently if inKev=true — this means active exploitation`,
+    `  4. Use EPSS percentile to justify urgency: top 10th percentile = patch within 24h`,
+    `  5. Include all reference links (FortiGuard, NVD) in the References section`,
+    ``,
+    EXEC_REPORT_TEMPLATE,
+  );
   return lines.join('\n');
 }
 
@@ -1629,22 +1673,23 @@ async function runCveSearch() {
   setStatus(`CVE lookup: ${cveId}…`, 'busy');
 
   try {
-    // Fetch CNAPP data and FortiGuard outbreak intel in parallel
-    const [cnappRes, fgRes] = await Promise.all([
+    // Fetch CNAPP exposure + full CVE threat intel in parallel
+    const [cnappRes, intelRes] = await Promise.all([
       fetch(BASE_URL + '/lql/cve', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ cveId, days: Number(el('cve-days').value) }),
       }),
-      fetch(BASE_URL + `/fortiguard/outbreak-by-cve?cveId=${encodeURIComponent(cveId)}`).catch(() => null),
+      fetch(BASE_URL + `/fortiguard/cve-intel?cveId=${encodeURIComponent(cveId)}`).catch(() => null),
     ]);
 
-    const data = await cnappRes.json();
+    const data  = await cnappRes.json();
     if (data.error) throw new Error(data.error);
 
-    const fgData     = fgRes?.ok ? await fgRes.json().catch(() => null) : null;
-    const fgOutbreaks = fgData?.outbreaks || [];
+    const intel       = intelRes?.ok ? await intelRes.json().catch(() => ({})) : {};
+    const fgOutbreaks = intel.outbreaks || [];
     data.fgOutbreaks  = fgOutbreaks;
+    data.cveIntel     = intel;
     _lastCveData      = data;
 
     // Close the drawer before posting results
@@ -1685,16 +1730,54 @@ async function runCveSearch() {
     resultsEl.className = 'cve-result-body';
     renderCveResults(data, resultsEl);
 
-    // FortiGuard + NVD reference links — always present
-    const fgSearchEl = document.createElement('div');
-    fgSearchEl.className = 'fg-search-link';
-    fgSearchEl.innerHTML =
-      `🔍 <a href="https://www.fortiguard.com/search?q=${encodeURIComponent(cveId)}" target="_blank">FortiGuard: ${cveId}</a>` +
-      `&nbsp;&nbsp;|&nbsp;&nbsp;` +
-      `<a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cveId)}" target="_blank">NVD: ${cveId}</a>`;
-    resultsEl.appendChild(fgSearchEl);
+    // Threat Radar + intel badges
+    const intel = data.cveIntel || {};
+    const intelEl = document.createElement('div');
+    intelEl.className = 'fg-outbreak-card';
 
-    // Append FortiGuard outbreak intel to the card if available
+    let intelHtml = '';
+
+    // Threat Radar Score
+    if (intel.threatRadarScore !== undefined) {
+      const score = intel.threatRadarScore;
+      const col = score >= 70 ? '#cc0000' : score >= 40 ? '#e65c00' : '#4caf50';
+      intelHtml += `<div style="margin-bottom:6px"><strong>🎯 Threat Radar Score: <span style="color:${col}">${score}/100</span></strong></div>`;
+    }
+
+    // Badges row: CVSS | EPSS | KEV
+    const badges = [];
+    if (intel.nvd?.cvssV3Score) {
+      const sev = intel.nvd.cvssV3Severity || '';
+      const c = sev === 'CRITICAL' ? '#cc0000' : sev === 'HIGH' ? '#e65c00' : sev === 'MEDIUM' ? '#f5a623' : '#4caf50';
+      badges.push(`<span class="fg-risk" style="background:${c};color:#fff">CVSSv3 ${intel.nvd.cvssV3Score} ${sev}</span>`);
+    }
+    if (intel.epss?.score !== undefined) {
+      const pct = (intel.epss.score * 100).toFixed(1);
+      const c = intel.epss.score > 0.5 ? '#cc0000' : intel.epss.score > 0.1 ? '#e65c00' : '#555';
+      badges.push(`<span class="fg-risk" style="background:${c};color:#fff">EPSS ${pct}%</span>`);
+    }
+    if (intel.kev?.inKev) {
+      badges.push(`<span class="fg-risk" style="background:#cc0000;color:#fff">⚠ CISA KEV</span>`);
+    }
+    if (badges.length) intelHtml += `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">${badges.join('')}</div>`;
+
+    // NVD description
+    if (intel.nvd?.description) {
+      intelHtml += `<div style="font-size:10.5px;color:#333;margin-bottom:4px">${intel.nvd.description.slice(0,200)}…</div>`;
+    }
+
+    // FortiGuard + NVD links
+    intelHtml +=
+      `<div class="fg-search-link" style="margin-top:4px">` +
+      `🔍 <a href="https://www.fortiguard.com/search?q=${encodeURIComponent(cveId)}" target="_blank">FortiGuard</a>` +
+      `&nbsp;|&nbsp;<a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cveId)}" target="_blank">NVD</a>` +
+      (intel.kev?.inKev ? `&nbsp;|&nbsp;<a href="https://www.cisa.gov/known-exploited-vulnerabilities-catalog" target="_blank">CISA KEV</a>` : '') +
+      `</div>`;
+
+    intelEl.innerHTML = intelHtml;
+    resultsEl.appendChild(intelEl);
+
+    // Append FortiGuard outbreak alert cards
     if (fgOutbreaks.length) {
       const fgEl = document.createElement('div');
       fgEl.className = 'fg-outbreak-card';

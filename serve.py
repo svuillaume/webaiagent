@@ -117,6 +117,103 @@ def _fg_outbreaks_cached():
         return _fg_cache['items']  # return stale on error
 
 
+# CVE intel cache: cveId → {epss, kev, nvd_cvss, outbreaks, ...}
+_cve_intel_cache: dict = {}
+
+def _fetch_cve_intel(cve: str) -> dict:
+    """Fetch EPSS, CISA KEV, NVD CVSS, and FortiGuard outbreaks for a CVE. Cached 1 hour."""
+    import urllib.request as _ur
+    import urllib.parse as _up
+
+    now = datetime.now(timezone.utc).timestamp()
+    if cve in _cve_intel_cache and now - _cve_intel_cache[cve].get('_ts', 0) < 3600:
+        return {k: v for k, v in _cve_intel_cache[cve].items() if k != '_ts'}
+
+    result: dict = {'cveId': cve}
+
+    def _get_json(url, headers=None, timeout=8):
+        try:
+            req = _ur.Request(url, headers=headers or {'User-Agent': 'WebAIAgent/1.0'})
+            with _ur.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read())
+        except Exception:
+            return None
+
+    # ── EPSS (Exploit Prediction Scoring System) ──────────────────────────────
+    epss_data = _get_json(f'https://api.first.org/data/v1/epss?cve={cve}')
+    if epss_data and epss_data.get('data'):
+        e = epss_data['data'][0]
+        result['epss'] = {
+            'score':      float(e.get('epss', 0)),
+            'percentile': float(e.get('percentile', 0)),
+            'date':       e.get('date', ''),
+        }
+    else:
+        result['epss'] = None
+
+    # ── CISA KEV (Known Exploited Vulnerabilities) ────────────────────────────
+    kev_data = _get_json('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', timeout=12)
+    if kev_data:
+        kev_entry = next((v for v in kev_data.get('vulnerabilities', []) if v.get('cveID') == cve), None)
+        if kev_entry:
+            result['kev'] = {
+                'inKev':        True,
+                'vendorProject': kev_entry.get('vendorProject', ''),
+                'product':       kev_entry.get('product', ''),
+                'dateAdded':     kev_entry.get('dateAdded', ''),
+                'dueDate':       kev_entry.get('dueDate', ''),
+                'description':   kev_entry.get('shortDescription', ''),
+            }
+        else:
+            result['kev'] = {'inKev': False}
+    else:
+        result['kev'] = None
+
+    # ── NVD CVSS ──────────────────────────────────────────────────────────────
+    nvd_data = _get_json(
+        f'https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}',
+        headers={'User-Agent': 'WebAIAgent/1.0', 'Accept': 'application/json'},
+        timeout=10,
+    )
+    if nvd_data and nvd_data.get('vulnerabilities'):
+        vuln = nvd_data['vulnerabilities'][0].get('cve', {})
+        metrics = vuln.get('metrics', {})
+        cvss_v3 = (metrics.get('cvssMetricV31') or metrics.get('cvssMetricV30') or [None])[0]
+        cvss_v2 = (metrics.get('cvssMetricV2') or [None])[0]
+        desc_list = vuln.get('descriptions', [])
+        desc_en = next((d['value'] for d in desc_list if d.get('lang') == 'en'), '')
+        result['nvd'] = {
+            'description': desc_en[:500],
+            'cvssV3Score':    cvss_v3['cvssData']['baseScore']    if cvss_v3 else None,
+            'cvssV3Severity': cvss_v3['cvssData']['baseSeverity'] if cvss_v3 else None,
+            'cvssV3Vector':   cvss_v3['cvssData']['vectorString']  if cvss_v3 else None,
+            'cvssV2Score':    cvss_v2['cvssData']['baseScore']    if cvss_v2 else None,
+            'published':      vuln.get('published', ''),
+            'lastModified':   vuln.get('lastModified', ''),
+        }
+    else:
+        result['nvd'] = None
+
+    # ── FortiGuard outbreaks ──────────────────────────────────────────────────
+    items = _fg_outbreaks_cached()
+    result['outbreaks'] = [i for i in items if cve in i.get('cves', [])]
+
+    # ── Threat Radar score (0–100): CVSS + EPSS + KEV + outbreak ─────────────
+    score = 0
+    if result['nvd'] and result['nvd']['cvssV3Score']:
+        score += result['nvd']['cvssV3Score'] * 4        # max 40
+    if result['epss'] and result['epss']['score']:
+        score += result['epss']['score'] * 30            # max 30
+    if result['kev'] and result['kev'].get('inKev'):
+        score += 20                                       # +20 if actively exploited
+    if result['outbreaks']:
+        score += 10                                       # +10 if FortiGuard outbreak
+    result['threatRadarScore'] = round(min(score, 100), 1)
+
+    _cve_intel_cache[cve] = {**result, '_ts': now}
+    return result
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
 
     # ── helpers ───────────────────────────────────────────────────────────
@@ -163,6 +260,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_fortiguard_outbreaks()
         elif self.path.startswith('/fortiguard/outbreak-by-cve'):
             self.serve_outbreak_by_cve()
+        elif self.path.startswith('/fortiguard/cve-intel'):
+            self.serve_cve_intel()
         else:
             self.send_error(404)
 
@@ -793,6 +892,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         matches = [i for i in items if cve in i.get('cves', [])]
         self.send_json(200, json.dumps({'cveId': cve, 'outbreaks': matches}).encode())
+
+    def serve_cve_intel(self):
+        """Aggregate CVE threat intel: FortiGuard outbreaks + EPSS + CISA KEV + NVD CVSS."""
+        import urllib.parse as _up
+        qs  = _up.parse_qs(_up.urlparse(self.path).query)
+        cve = (qs.get('cveId', [''])[0]).upper().strip()
+        if not cve:
+            self.send_json(400, json.dumps({'error': 'cveId required'}).encode())
+            return
+        result = _fetch_cve_intel(cve)
+        self.send_json(200, json.dumps(result).encode())
 
     def serve_lql_generate(self):
         try:
