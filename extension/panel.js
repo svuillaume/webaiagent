@@ -158,7 +158,7 @@ async function autoFillFromConfig() {
 }
 
 // ── Welcome message ───────────────────────────────────────────────────────────
-appendTurn('ai', `**Web AI Agent** — your browser-native security assistant powered by FortiCNAPP and Claude.
+appendTurn('ai', `**Web AI Agent** — your browser-native security assistant powered by FortiCNAPP.
 
 **What I can do on any page you're browsing:**
 • 📄 **Read** — load the page into context so you can ask questions about it
