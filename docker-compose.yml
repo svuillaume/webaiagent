@@ -6,7 +6,7 @@ services:
         - lacework_toml
     container_name: webai-serve
     ports:
-      - "8765:8765"
+      - "45321:45321"
     env_file:
       - .env
     volumes:

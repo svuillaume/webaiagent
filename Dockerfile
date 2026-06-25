@@ -21,6 +21,6 @@ COPY extension/ ./extension/
 # .env and lacework config injected at runtime via env vars or volume
 ENV PYTHONUNBUFFERED=1
 
-EXPOSE 8765
+EXPOSE 45321
 
 CMD ["python3", "serve.py"]

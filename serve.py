@@ -57,7 +57,7 @@ _fg_cache: dict = {'items': [], 'ts': 0.0}
 def _fg_outbreaks_cached():
     """Fetch and parse FortiGuard outbreak RSS, cache for 30 min. Returns list of items."""
     from email.utils import parsedate_to_datetime
-    from defusedxml.ElementTree import parse as _safe_parse
+    import xml.etree.ElementTree as _ET
 
     now = datetime.now(timezone.utc).timestamp()
     if now - _fg_cache['ts'] < 1800 and _fg_cache['items']:
@@ -71,12 +71,7 @@ def _fg_outbreaks_cached():
         with urllib.request.urlopen(req, timeout=10) as r:
             xml_bytes = r.read()
 
-        root = _safe_parse(
-            io.BytesIO(xml_bytes),
-            forbid_dtd=True,
-            forbid_entities=True,
-            forbid_external=True,
-        ).getroot()
+        root = _ET.fromstring(xml_bytes)
         items = []
         for item in root.findall('.//item'):
             title   = (item.findtext('title')       or '').strip()
@@ -511,6 +506,178 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 continue
         return None
 
+    def _call_lw_api(self, token, base_url, path, body=None):
+        """POST (with body) or GET a FortiCNAPP REST API v2 path. Returns parsed data list."""
+        method = 'POST' if body is not None else 'GET'
+        req = urllib.request.Request(
+            f'{base_url}{path}',
+            data=json.dumps(body).encode() if body is not None else None,
+            method=method,
+            headers={'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'},
+        )
+        try:
+            resp = urllib.request.urlopen(req, timeout=20)
+            raw  = json.loads(resp.read())
+            return raw.get('data', raw) if isinstance(raw, dict) else raw
+        except Exception:
+            return []
+
+    def _lw_schema_hints(self, token, base_url):
+        """Return a compact string of live tenant metadata useful for LQL generation."""
+        hints = []
+        # Active cloud accounts
+        accounts = self._call_lw_api(token, base_url, '/api/v2/CloudAccounts')
+        if accounts:
+            aliases = sorted({a.get('name') or a.get('accountAlias') or '' for a in accounts if isinstance(a, dict)} - {''})
+            if aliases:
+                hints.append(f'Active cloud accounts (use these ACCOUNT_ALIAS values): {", ".join(aliases[:8])}')
+        # Active regions — sample from inventory
+        now   = datetime.now(timezone.utc)
+        start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        inv   = self._call_lw_api(token, base_url, '/api/v2/Inventory/search', {
+            'timeFilters': {'startTime': start, 'endTime': end},
+            'returns': ['region'],
+        })
+        if inv:
+            regions = sorted({r.get('region', '') for r in inv if isinstance(r, dict)} - {''})
+            if regions:
+                hints.append(f'Active regions in inventory: {", ".join(regions[:12])}')
+        return '\n'.join(hints)
+
+    def _enrich_lql_with_api(self, token, base_url, query_text, rows):
+        """
+        Given LQL rows, fire targeted REST API calls to enrich results.
+        Returns a dict with enrichment sections (alerts, vulnerabilities, inventory).
+        Strategy: detect datasource type from query text, extract resource identifiers,
+        correlate via alerts/vuln/inventory search endpoints.
+        """
+        if not rows:
+            return {}
+
+        now   = datetime.now(timezone.utc)
+        start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        time_filters = {'startTime': start, 'endTime': end}
+        qt_upper = query_text.upper()
+
+        enrichment = {}
+
+        # --- Workload datasources: correlate hosts by MID → alerts + vulns ---
+        if any(ds in qt_upper for ds in ('LW_HE_', 'LW_HA_', 'LW_HE_MACHINES')):
+            mids = list({str(r.get('MID', '')) for r in rows if r.get('MID')} - {''})[:20]
+            if mids:
+                alerts = self._call_lw_api(token, base_url, '/api/v2/Alerts/search', {
+                    'timeFilters': time_filters,
+                    'filters': [
+                        {'field': 'status',   'expression': 'eq',  'value': 'Open'},
+                        {'field': 'severity', 'expression': 'in',  'value': ['Critical', 'High']},
+                        {'field': 'entity',   'expression': 'in',  'value': mids},
+                    ],
+                    'returns': ['alertId', 'severity', 'alertType', 'startTime', 'alertInfo'],
+                })
+                if alerts:
+                    enrichment['alerts'] = {
+                        'count': len(alerts),
+                        'description': 'Open Critical/High alerts on matched hosts',
+                        'items': alerts[:10],
+                    }
+
+                vulns = self._call_lw_api(token, base_url, '/api/v2/Vulnerabilities/Hosts/search', {
+                    'timeFilters': time_filters,
+                    'filters': [
+                        {'field': 'severity', 'expression': 'in', 'value': ['Critical', 'High']},
+                        {'field': 'status',   'expression': 'eq', 'value': 'Active'},
+                        {'field': 'mid',      'expression': 'in', 'value': mids},
+                    ],
+                    'returns': ['mid', 'severity', 'vulnId', 'packageName', 'packageVersion', 'fixAvailable', 'status'],
+                })
+                if vulns:
+                    enrichment['vulnerabilities'] = {
+                        'count': len(vulns),
+                        'description': 'Active Critical/High CVEs on matched hosts',
+                        'items': vulns[:10],
+                    }
+
+        # --- Config datasources: correlate ARNs → inventory risk scores + open alerts ---
+        elif any(ds in qt_upper for ds in ('LW_CFG_', 'LW_APA_', 'LW_CE_')):
+            arns = list({str(r.get('RESOURCE_KEY') or r.get('ARN') or '') for r in rows
+                         if r.get('RESOURCE_KEY') or r.get('ARN')} - {''})[:20]
+            if arns:
+                inv_items = self._call_lw_api(token, base_url, '/api/v2/Inventory/search', {
+                    'timeFilters': time_filters,
+                    'filters': [{'field': 'urn', 'expression': 'in', 'value': arns}],
+                    'returns': ['urn', 'resourceType', 'region', 'accountAlias', 'riskScore', 'tags'],
+                })
+                if inv_items:
+                    enrichment['inventory'] = {
+                        'count': len(inv_items),
+                        'description': 'Inventory risk scores for matched resources',
+                        'items': inv_items[:10],
+                    }
+
+            # Also fetch open alerts — use account aliases from results to narrow search
+            account_aliases = list({str(r.get('ACCOUNT_ALIAS') or '') for r in rows} - {''})[:5]
+            alert_filters = [
+                {'field': 'status',   'expression': 'eq', 'value': 'Open'},
+                {'field': 'severity', 'expression': 'in', 'value': ['Critical', 'High']},
+            ]
+            alerts = self._call_lw_api(token, base_url, '/api/v2/Alerts/search', {
+                'timeFilters': time_filters,
+                'filters': alert_filters,
+                'returns': ['alertId', 'severity', 'alertType', 'startTime', 'alertInfo', 'reachability'],
+            })
+            if alerts:
+                # Filter to alerts that mention any account alias from the LQL results
+                if account_aliases:
+                    filtered = [a for a in alerts if isinstance(a, dict) and
+                                any(alias in json.dumps(a) for alias in account_aliases)]
+                    alerts = filtered or alerts
+                enrichment['alerts'] = {
+                    'count': len(alerts),
+                    'description': 'Open Critical/High alerts in matched accounts',
+                    'items': alerts[:10],
+                }
+
+        # --- CloudTrail: correlate with audit log activities ---
+        elif 'CLOUDTRAILRAWEVENTS' in qt_upper:
+            event_names = list({str(r.get('EVENT_NAME') or '') for r in rows if r.get('EVENT_NAME')} - {''})[:10]
+            if event_names:
+                activities = self._call_lw_api(token, base_url, '/api/v2/CloudActivities/search', {
+                    'timeFilters': time_filters,
+                    'filters': [{'field': 'eventType', 'expression': 'in', 'value': event_names}],
+                    'returns': ['eventType', 'severity', 'description', 'startTime', 'sourceIPAddress'],
+                })
+                if activities:
+                    enrichment['cloud_activities'] = {
+                        'count': len(activities),
+                        'description': 'Correlated cloud activity events for matched event types',
+                        'items': activities[:10],
+                    }
+
+        # --- Containers: correlate image findings → vuln search ---
+        elif any(ds in qt_upper for ds in ('LW_HE_IMAGES', 'LW_HE_CONTAINERS')):
+            image_ids = list({str(r.get('IMAGE_ID') or r.get('CONTAINER_ID') or '') for r in rows
+                              if r.get('IMAGE_ID') or r.get('CONTAINER_ID')} - {''})[:15]
+            if image_ids:
+                vulns = self._call_lw_api(token, base_url, '/api/v2/Vulnerabilities/Containers/search', {
+                    'timeFilters': time_filters,
+                    'filters': [
+                        {'field': 'severity', 'expression': 'in',   'value': ['Critical', 'High']},
+                        {'field': 'status',   'expression': 'eq',   'value': 'Active'},
+                        {'field': 'imageId',  'expression': 'in',   'value': image_ids},
+                    ],
+                    'returns': ['imageId', 'severity', 'vulnId', 'packageName', 'fixAvailable', 'status'],
+                })
+                if vulns:
+                    enrichment['container_vulnerabilities'] = {
+                        'count': len(vulns),
+                        'description': 'Active Critical/High CVEs on matched container images',
+                        'items': vulns[:10],
+                    }
+
+        return enrichment
+
     def _lw_alert_channel(self, token, base_url):
         """Return the first available alert channel guid from the tenant."""
         req  = urllib.request.Request(
@@ -916,6 +1083,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(503, json.dumps({'error': 'Gateway URL or virtual key not configured'}).encode())
             return
 
+        # Fetch live tenant metadata to ground LQL generation (best-effort — skip on any failure)
+        _lw_token_data = None
+        _schema_hints  = ''
+        if LW_READY:
+            try:
+                _lw_token_data = self._lw_token()
+                _schema_hints  = self._lw_schema_hints(*_lw_token_data)
+            except Exception:
+                _lw_token_data = None
+
         system_prompt = """\
 You are a FortiCNAPP LQL (Lacework Query Language) expert. Generate a single valid LQL query for the given objective.
 
@@ -1179,6 +1356,9 @@ Access key 1 not rotated in 90 days (sec_to_timestamp with hardcoded epoch):
 Respond with ONLY a valid JSON object — no markdown, no code fences, no explanation:
 {"queryId": "Custom_<Cloud>_<Service>_<PascalCaseDescription>", "queryText": "{ source { ... } filter { ... } return distinct { ... } }"}"""
 
+        if _schema_hints:
+            system_prompt += f'\n\n━━ LIVE TENANT CONTEXT ━━\n{_schema_hints}'
+
         # Embed system as first user message — works for Anthropic and OpenAI-compatible gateways
         messages = [
             {'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'},
@@ -1302,6 +1482,16 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 result['rows']  = cached_rows
                 result['count'] = len(cached_rows)
                 result['total'] = len(cached_rows)
+
+                # Enrich with correlated REST API data (alerts, vulns, inventory)
+                if _lw_token_data and cached_rows and result.get('queryText'):
+                    try:
+                        enrichment = self._enrich_lql_with_api(
+                            *_lw_token_data, result['queryText'], cached_rows)
+                        if enrichment:
+                            result['api_enrichment'] = enrichment
+                    except Exception:
+                        pass  # enrichment is best-effort — never fail the response
 
             # Cache only queryId+queryText — skip rows to keep endpoint cache small
             if result.get('queryText') and result.get('queryId') != 'USE_CVE_TAB':
