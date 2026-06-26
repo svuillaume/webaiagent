@@ -1989,6 +1989,54 @@ function renderCveResults(data, resultsEl) {
 
 // ── FortiCNAPP LQL ───────────────────────────────────────────────────────────
 
+function formatApiEnrichment(enrichment) {
+  if (!enrichment || !Object.keys(enrichment).length) return '';
+  const lines = ['\n\n--- FortiCNAPP API Correlation ---'];
+  const { alerts, vulnerabilities, inventory, cloud_activities, container_vulnerabilities, machines } = enrichment;
+  if (alerts) {
+    lines.push(`Open Critical/High Alerts (${alerts.count} total):`);
+    (alerts.items || []).forEach(a => {
+      const info = a.alertInfo || {};
+      lines.push(`  [${a.severity}] ${a.alertName || a.alertType || a.alertId}: ${info.subject || info.description || ''} reachability:${a.reachability || '?'} — ${a.startTime || ''}`);
+    });
+  }
+  if (vulnerabilities) {
+    lines.push(`Active Critical/High CVEs on matched hosts (${vulnerabilities.count} total):`);
+    (vulnerabilities.items || []).forEach(v => {
+      const fk = v.featureKey || {}; const fi = v.fixInfo || {};
+      const host = v.machineTags ? (v.machineTags.Hostname || v.machineTags.Name || '') : '';
+      lines.push(`  [${v.severity}] ${v.vulnId} pkg:${fk.name || '?'} ${fk.version_installed || ''} → fix:${fi.fixed_version || fi.fix_available || '?'} host:${host} status:${v.status || ''}`);
+    });
+  }
+  if (container_vulnerabilities) {
+    lines.push(`Critical/High CVEs on matched containers (${container_vulnerabilities.count} total):`);
+    (container_vulnerabilities.items || []).forEach(v => {
+      const fk = v.featureKey || {}; const fi = v.fixInfo || {};
+      lines.push(`  [${v.severity}] ${v.vulnId} pkg:${fk.name || '?'} ${fk.version_installed || ''} → fix:${fi.fixed_version || fi.fix_available || '?'} status:${v.status || ''}`);
+    });
+  }
+  if (inventory) {
+    lines.push(`Inventory status for matched cloud resources (${inventory.count} total):`);
+    (inventory.items || []).forEach(i => {
+      const s = i.status || {}; const reason = s.reason || '';
+      lines.push(`  [${i.csp}] ${i.resourceType} ${i.urn || ''} region:${i.resourceRegion || ''} service:${i.service || ''} status:${reason || JSON.stringify(s)}`);
+    });
+  }
+  if (machines) {
+    lines.push(`Host details for matched MIDs (${machines.count} total):`);
+    (machines.items || []).forEach(m => {
+      const t = m.machineTags || {};
+      lines.push(`  ${m.hostname || '?'} ip:${m.primaryIpAddr || t.InternalIp || '?'} externalIp:${t.ExternalIp || '?'} internetExposure:${t.lw_InternetExposure || 'No'} provider:${t.VmProvider || '?'}`);
+    });
+  }
+  if (cloud_activities) {
+    lines.push(`Correlated CloudTrail activity events (${cloud_activities.count} total):`);
+    (cloud_activities.items || []).forEach(a =>
+      lines.push(`  ${a.eventType} actor:${a.eventActor || '?'} src:${a.sourceIPAddress || '?'} — ${a.startTime || ''}`));
+  }
+  return lines.join('\n');
+}
+
 let _lqlQueries = [];
 
 el('lql').addEventListener('click', async () => {
@@ -2084,7 +2132,7 @@ el('lql-run').addEventListener('click', async () => {
     const sample = rows.slice(0, 50).map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
     history.push({
       role: 'user',
-      content: `Security finding data from LQL query "${query.id}" — ${count} rows:\n\n${sample}\n\n${EXEC_REPORT_TEMPLATE}`,
+      content: `Security finding data from LQL query "${query.id}" — ${count} rows:\n\n${sample}${formatApiEnrichment(data.api_enrichment)}\n\n${EXEC_REPORT_TEMPLATE}`,
     });
     send(true); // auto-triggers executive analysis; user turn already pushed above
   } catch (e) {
@@ -2187,7 +2235,7 @@ el('lql-gen-btn').addEventListener('click', async () => {
     const sample = rows.slice(0, 50).map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
     history.push({
       role: 'user',
-      content: `Security finding data from LQL query "${label}" — ${count} rows:\n\n${sample}\n\n${EXEC_REPORT_TEMPLATE}`,
+      content: `Security finding data from LQL query "${label}" — ${count} rows:\n\n${sample}${formatApiEnrichment(data.api_enrichment)}\n\n${EXEC_REPORT_TEMPLATE}`,
     });
     send(true);
   } catch (e) {

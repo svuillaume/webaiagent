@@ -569,26 +569,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
             aliases = sorted({a.get('name') or a.get('accountAlias') or '' for a in accounts if isinstance(a, dict)} - {''})
             if aliases:
                 hints.append(f'Active cloud accounts (use these ACCOUNT_ALIAS values): {", ".join(aliases[:8])}')
-        # Active regions — sample from inventory
+        # Active regions — sample from inventory (try each CSP; inventory requires csp field)
         now   = datetime.now(timezone.utc)
         start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
         end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
-        inv   = self._call_lw_api(token, base_url, '/api/v2/Inventory/search', {
-            'timeFilters': {'startTime': start, 'endTime': end},
-            'returns': ['region'],
-        })
-        if inv:
-            regions = sorted({r.get('region', '') for r in inv if isinstance(r, dict)} - {''})
-            if regions:
-                hints.append(f'Active regions in inventory: {", ".join(regions[:12])}')
+        regions = set()
+        for csp in ('AWS', 'AZURE', 'GCP'):
+            inv = self._call_lw_api(token, base_url, '/api/v2/Inventory/search', {
+                'timeFilter': {'startTime': start, 'endTime': end},
+                'csp': csp,
+                'returns': ['resourceRegion', 'csp'],
+            })
+            for r in (inv or []):
+                if isinstance(r, dict) and r.get('resourceRegion'):
+                    regions.add(r['resourceRegion'])
+            if len(regions) >= 12:
+                break
+        if regions:
+            hints.append(f'Active regions in inventory: {", ".join(sorted(regions)[:12])}')
         return '\n'.join(hints)
 
     def _enrich_lql_with_api(self, token, base_url, query_text, rows):
         """
-        Given LQL rows, fire targeted REST API calls to enrich results.
-        Returns a dict with enrichment sections (alerts, vulnerabilities, inventory).
-        Strategy: detect datasource type from query text, extract resource identifiers,
-        correlate via alerts/vuln/inventory search endpoints.
+        Enrich LQL results with correlated FortiCNAPP REST API v2 data.
+
+        API contract (from lacework-api-v2.yaml):
+          - All search bodies use "timeFilter" (singular), not "timeFilters"
+          - Alerts: only "eq" expression supported on severity/status/alertType/etc.
+            Use multiple eq filters (one per severity) since "in" is not allowed.
+          - Vulnerabilities/Hosts, /Containers, Entities/*, CloudActivities:
+            full GENERIC_FILTERS — supports "in" with "values" (plural array).
+          - Inventory: requires "csp" field (AWS|AZURE|GCP); "in" via "values".
         """
         if not rows:
             return {}
@@ -596,122 +607,158 @@ class Handler(http.server.BaseHTTPRequestHandler):
         now   = datetime.now(timezone.utc)
         start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
         end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
-        time_filters = {'startTime': start, 'endTime': end}
+        tf    = {'startTime': start, 'endTime': end}  # timeFilter (singular) key
         qt_upper = query_text.upper()
 
         enrichment = {}
 
-        # --- Workload datasources: correlate hosts by MID → alerts + vulns ---
-        if any(ds in qt_upper for ds in ('LW_HE_', 'LW_HA_', 'LW_HE_MACHINES')):
+        def _alerts_critical_high(extra_filters=None):
+            """Fetch open Critical + High alerts (two calls, Alerts API only supports eq on severity)."""
+            result = []
+            for sev in ('Critical', 'High'):
+                f = [{'field': 'status', 'expression': 'eq', 'value': 'Open'},
+                     {'field': 'severity', 'expression': 'eq', 'value': sev}]
+                if extra_filters:
+                    f += extra_filters
+                batch = self._call_lw_api(token, base_url, '/api/v2/Alerts/search', {
+                    'timeFilter': tf,
+                    'filters': f,
+                    'returns': ['alertId', 'severity', 'alertType', 'alertName',
+                                'startTime', 'alertInfo', 'derivedFields', 'reachability'],
+                })
+                result.extend(batch or [])
+            return result
+
+        # ── Workload datasources (LW_HE_*, LW_HA_*) ─────────────────────────
+        # LW_HE_IMAGES and LW_HE_CONTAINERS start with LW_HE_ so they match first;
+        # container vuln lookup is handled below inside the same branch.
+        if any(ds in qt_upper for ds in ('LW_HE_', 'LW_HA_')):
             mids = list({str(r.get('MID', '')) for r in rows if r.get('MID')} - {''})[:20]
+
+            # Container images: look up CVEs by imageId
+            if any(ds in qt_upper for ds in ('LW_HE_IMAGES', 'LW_HE_CONTAINERS')):
+                image_ids = list({str(r.get('IMAGE_ID') or r.get('CONTAINER_ID') or '')
+                                  for r in rows if r.get('IMAGE_ID') or r.get('CONTAINER_ID')} - {''})[:15]
+                if image_ids:
+                    for sev in ('Critical', 'High'):
+                        cvulns = self._call_lw_api(token, base_url, '/api/v2/Vulnerabilities/Containers/search', {
+                            'timeFilter': tf,
+                            'filters': [
+                                {'field': 'severity', 'expression': 'eq', 'value': sev},
+                                {'field': 'imageId',  'expression': 'in', 'values': image_ids},
+                            ],
+                            'returns': ['imageId', 'severity', 'vulnId', 'featureKey', 'fixInfo', 'status'],
+                        })
+                        if cvulns:
+                            prev = enrichment.get('container_vulnerabilities', {})
+                            enrichment['container_vulnerabilities'] = {
+                                'count': prev.get('count', 0) + len(cvulns),
+                                'description': 'Critical/High CVEs on matched container images',
+                                'items': (prev.get('items', []) + cvulns)[:10],
+                            }
+
             if mids:
-                alerts = self._call_lw_api(token, base_url, '/api/v2/Alerts/search', {
-                    'timeFilters': time_filters,
-                    'filters': [
-                        {'field': 'status',   'expression': 'eq',  'value': 'Open'},
-                        {'field': 'severity', 'expression': 'in',  'value': ['Critical', 'High']},
-                        {'field': 'entity',   'expression': 'in',  'value': mids},
-                    ],
-                    'returns': ['alertId', 'severity', 'alertType', 'startTime', 'alertInfo'],
-                })
-                if alerts:
-                    enrichment['alerts'] = {
-                        'count': len(alerts),
-                        'description': 'Open Critical/High alerts on matched hosts',
-                        'items': alerts[:10],
-                    }
-
-                vulns = self._call_lw_api(token, base_url, '/api/v2/Vulnerabilities/Hosts/search', {
-                    'timeFilters': time_filters,
-                    'filters': [
-                        {'field': 'severity', 'expression': 'in', 'value': ['Critical', 'High']},
-                        {'field': 'status',   'expression': 'eq', 'value': 'Active'},
-                        {'field': 'mid',      'expression': 'in', 'value': mids},
-                    ],
-                    'returns': ['mid', 'severity', 'vulnId', 'packageName', 'packageVersion', 'fixAvailable', 'status'],
-                })
-                if vulns:
+                # Host CVEs via Vulnerabilities/Hosts
+                host_vulns = []
+                for sev in ('Critical', 'High'):
+                    hv = self._call_lw_api(token, base_url, '/api/v2/Vulnerabilities/Hosts/search', {
+                        'timeFilter': tf,
+                        'filters': [
+                            {'field': 'severity', 'expression': 'eq', 'value': sev},
+                            {'field': 'status',   'expression': 'eq', 'value': 'Active'},
+                            {'field': 'mid',      'expression': 'in', 'values': mids},
+                        ],
+                        'returns': ['mid', 'severity', 'vulnId', 'featureKey', 'fixInfo', 'status', 'machineTags'],
+                    })
+                    host_vulns.extend(hv or [])
+                if host_vulns:
                     enrichment['vulnerabilities'] = {
-                        'count': len(vulns),
+                        'count': len(host_vulns),
                         'description': 'Active Critical/High CVEs on matched hosts',
-                        'items': vulns[:10],
+                        'items': host_vulns[:10],
                     }
 
-        # --- Config datasources: correlate ARNs → inventory risk scores + open alerts ---
-        elif any(ds in qt_upper for ds in ('LW_CFG_', 'LW_APA_', 'LW_CE_')):
-            arns = list({str(r.get('RESOURCE_KEY') or r.get('ARN') or '') for r in rows
-                         if r.get('RESOURCE_KEY') or r.get('ARN')} - {''})[:20]
-            if arns:
-                inv_items = self._call_lw_api(token, base_url, '/api/v2/Inventory/search', {
-                    'timeFilters': time_filters,
-                    'filters': [{'field': 'urn', 'expression': 'in', 'value': arns}],
-                    'returns': ['urn', 'resourceType', 'region', 'accountAlias', 'riskScore', 'tags'],
+                # Machine details for hostname / internet exposure
+                machines = self._call_lw_api(token, base_url, '/api/v2/Entities/Machines/search', {
+                    'timeFilter': tf,
+                    'filters': [{'field': 'mid', 'expression': 'in', 'values': mids}],
+                    'returns': ['mid', 'hostname', 'machineTags', 'primaryIpAddr'],
                 })
-                if inv_items:
-                    enrichment['inventory'] = {
-                        'count': len(inv_items),
-                        'description': 'Inventory risk scores for matched resources',
-                        'items': inv_items[:10],
+                if machines:
+                    enrichment['machines'] = {
+                        'count': len(machines),
+                        'description': 'Host details for matched MIDs',
+                        'items': machines[:10],
                     }
 
-            # Also fetch open alerts — use account aliases from results to narrow search
-            account_aliases = list({str(r.get('ACCOUNT_ALIAS') or '') for r in rows} - {''})[:5]
-            alert_filters = [
-                {'field': 'status',   'expression': 'eq', 'value': 'Open'},
-                {'field': 'severity', 'expression': 'in', 'value': ['Critical', 'High']},
-            ]
-            alerts = self._call_lw_api(token, base_url, '/api/v2/Alerts/search', {
-                'timeFilters': time_filters,
-                'filters': alert_filters,
-                'returns': ['alertId', 'severity', 'alertType', 'startTime', 'alertInfo', 'reachability'],
-            })
+            # Open alerts — no mid filter on Alerts (not supported); fetch by category
+            alerts = _alerts_critical_high()
             if alerts:
-                # Filter to alerts that mention any account alias from the LQL results
+                # Post-filter: keep alerts whose entityMap or alertInfo mentions a known hostname
+                hostnames = {m.get('hostname', '') for m in (enrichment.get('machines', {}).get('items') or [])} - {''}
+                if hostnames:
+                    filtered = [a for a in alerts if isinstance(a, dict) and
+                                any(h in json.dumps(a) for h in hostnames)]
+                    alerts = filtered if filtered else alerts[:10]
+                enrichment['alerts'] = {
+                    'count': len(alerts),
+                    'description': 'Open Critical/High alerts (filtered to matched hosts)',
+                    'items': alerts[:10],
+                }
+
+        # ── Config datasources (LW_CFG_*, LW_APA_*, LW_CE_*) ─────────────────
+        if any(ds in qt_upper for ds in ('LW_CFG_', 'LW_APA_', 'LW_CE_')):
+            arns = list({str(r.get('RESOURCE_KEY') or r.get('ARN') or '')
+                         for r in rows if r.get('RESOURCE_KEY') or r.get('ARN')} - {''})[:20]
+
+            # Inventory lookup per CSP (requires explicit csp field)
+            if arns:
+                for csp in ('AWS', 'AZURE', 'GCP'):
+                    inv = self._call_lw_api(token, base_url, '/api/v2/Inventory/search', {
+                        'timeFilter': tf,
+                        'csp': csp,
+                        'filters': [{'field': 'urn', 'expression': 'in', 'values': arns}],
+                        'returns': ['urn', 'resourceType', 'resourceRegion', 'csp',
+                                    'service', 'status', 'apiKey'],
+                    })
+                    if inv:
+                        prev = enrichment.get('inventory', {})
+                        enrichment['inventory'] = {
+                            'count': prev.get('count', 0) + len(inv),
+                            'description': 'Inventory status for matched cloud resources',
+                            'items': (prev.get('items', []) + inv)[:10],
+                        }
+
+            # Open alerts narrowed by account alias post-filter
+            alerts = _alerts_critical_high()
+            if alerts:
+                account_aliases = list({str(r.get('ACCOUNT_ALIAS') or '') for r in rows} - {''})[:5]
                 if account_aliases:
                     filtered = [a for a in alerts if isinstance(a, dict) and
                                 any(alias in json.dumps(a) for alias in account_aliases)]
-                    alerts = filtered or alerts
+                    alerts = filtered if filtered else alerts[:10]
                 enrichment['alerts'] = {
                     'count': len(alerts),
                     'description': 'Open Critical/High alerts in matched accounts',
                     'items': alerts[:10],
                 }
 
-        # --- CloudTrail: correlate with audit log activities ---
-        elif 'CLOUDTRAILRAWEVENTS' in qt_upper:
-            event_names = list({str(r.get('EVENT_NAME') or '') for r in rows if r.get('EVENT_NAME')} - {''})[:10]
+        # ── CloudTrail events ─────────────────────────────────────────────────
+        if 'CLOUDTRAILRAWEVENTS' in qt_upper:
+            event_names = list({str(r.get('EVENT_NAME') or '') for r in rows
+                                if r.get('EVENT_NAME')} - {''})[:10]
             if event_names:
                 activities = self._call_lw_api(token, base_url, '/api/v2/CloudActivities/search', {
-                    'timeFilters': time_filters,
-                    'filters': [{'field': 'eventType', 'expression': 'in', 'value': event_names}],
-                    'returns': ['eventType', 'severity', 'description', 'startTime', 'sourceIPAddress'],
+                    'timeFilter': tf,
+                    'filters': [{'field': 'eventType', 'expression': 'in', 'values': event_names}],
+                    'returns': ['startTime', 'endTime', 'eventType', 'eventActor',
+                                'eventModel', 'sourceIPAddress', 'entityMap'],
                 })
                 if activities:
                     enrichment['cloud_activities'] = {
                         'count': len(activities),
-                        'description': 'Correlated cloud activity events for matched event types',
+                        'description': 'Correlated CloudTrail activity events',
                         'items': activities[:10],
-                    }
-
-        # --- Containers: correlate image findings → vuln search ---
-        elif any(ds in qt_upper for ds in ('LW_HE_IMAGES', 'LW_HE_CONTAINERS')):
-            image_ids = list({str(r.get('IMAGE_ID') or r.get('CONTAINER_ID') or '') for r in rows
-                              if r.get('IMAGE_ID') or r.get('CONTAINER_ID')} - {''})[:15]
-            if image_ids:
-                vulns = self._call_lw_api(token, base_url, '/api/v2/Vulnerabilities/Containers/search', {
-                    'timeFilters': time_filters,
-                    'filters': [
-                        {'field': 'severity', 'expression': 'in',   'value': ['Critical', 'High']},
-                        {'field': 'status',   'expression': 'eq',   'value': 'Active'},
-                        {'field': 'imageId',  'expression': 'in',   'value': image_ids},
-                    ],
-                    'returns': ['imageId', 'severity', 'vulnId', 'packageName', 'fixAvailable', 'status'],
-                })
-                if vulns:
-                    enrichment['container_vulnerabilities'] = {
-                        'count': len(vulns),
-                        'description': 'Active Critical/High CVEs on matched container images',
-                        'items': vulns[:10],
                     }
 
         return enrichment
@@ -1265,9 +1312,13 @@ Storage:
   LW_CFG_AWS_S3_GET_BUCKET_LOGGING           — S3 server access logging config
   LW_CFG_AWS_S3_GET_BUCKET_POLICY            — S3 bucket policies
   LW_CFG_AWS_S3_GET_BUCKET_VERSIONING        — S3 versioning; RESOURCE_CONFIG:Status::String ('Enabled' or 'Suspended')
+  LW_CFG_AWS_S3_GET_BUCKET_POLICY_STATUS     — S3 public policy status; RESOURCE_CONFIG:PolicyStatus.IsPublic = 'true' (boolean, no ::String cast)
   LW_CFG_AWS_S3_GET_PUBLIC_ACCESS_BLOCK      — per-bucket public access block settings
   LW_CFG_AWS_S3CONTROL_GET_PUBLIC_ACCESS_BLOCK — account-level S3 public access block
-  NOTE for S3 public access: LW_CFG_AWS_S3_GET_PUBLIC_ACCESS_BLOCK has RESOURCE_CONFIG:BlockPublicAcls = 'true'/'false', IgnorePublicAcls = 'true'/'false', BlockPublicPolicy = 'true'/'false', RestrictPublicBuckets = 'true'/'false' — NO ::String cast needed
+  CRITICAL for S3 public access block: all fields are nested under PublicAccessBlockConfiguration — RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicAcls = 'true'/'false', RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicPolicy = 'true'/'false', RESOURCE_CONFIG:PublicAccessBlockConfiguration.IgnorePublicAcls = 'true'/'false', RESOURCE_CONFIG:PublicAccessBlockConfiguration.RestrictPublicBuckets = 'true'/'false' — NO ::String cast needed
+  CRITICAL for S3 policy status: IsPublic is nested under PolicyStatus — RESOURCE_CONFIG:PolicyStatus.IsPublic = 'true' NOT RESOURCE_CONFIG:IsPublic
+  NOTE for S3 public access: join LW_CFG_AWS_S3 with LW_CFG_AWS_S3_GET_PUBLIC_ACCESS_BLOCK — this 2-source join works. Do NOT add a third source (e.g. LW_CFG_AWS_S3_GET_BUCKET_ENCRYPTION) — 3-source S3 joins fail with "Cannot find defined relationships". For sensitive data proxy: use the 2-source public access join alone and mention encryption separately in the report.
+  NOTE for S3 sensitive data: no native DSPM/data-classification LQL datasource exists. Best proxy = S3 buckets with public access block weakened (any PublicAccessBlockConfiguration field = 'false').
   LW_CFG_AWS_RDS_DB_INSTANCES                 — RDS instances; RESOURCE_CONFIG:StorageEncrypted = 'true'/'false', MultiAZ = 'true'/'false', PubliclyAccessible = 'true'/'false'
   LW_CFG_AWS_RDS_CLUSTERS                     — RDS Aurora clusters
   LW_CFG_AWS_RDS_DB_SNAPSHOTS                 — RDS snapshots
@@ -1372,6 +1423,12 @@ CloudTrail not encrypted with KMS:
 S3 buckets without server-side encryption (join to encryption datasource):
 {"queryId":"Custom_AWS_S3_NoEncryption","queryText":"{ source { LW_CFG_AWS_S3 bucket with LW_CFG_AWS_S3_GET_BUCKET_ENCRYPTION encryption } filter { not value_exists(encryption.RESOURCE_CONFIG) } return distinct { bucket.ACCOUNT_ALIAS, bucket.ACCOUNT_ID, bucket.ARN as RESOURCE_KEY, bucket.RESOURCE_REGION, bucket.RESOURCE_TYPE, bucket.SERVICE, 'S3 bucket server-side encryption not enabled' as COMPLIANCE_FAILURE_REASON } }"}
 
+S3 buckets with public access — join base table with public access block config (fields nested under PublicAccessBlockConfiguration):
+{"queryId":"Custom_AWS_S3_PublicAccessBlockWeakened","queryText":"{ source { LW_CFG_AWS_S3 b with LW_CFG_AWS_S3_GET_PUBLIC_ACCESS_BLOCK p } filter { p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicAcls = 'false' OR p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicPolicy = 'false' OR p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.IgnorePublicAcls = 'false' OR p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.RestrictPublicBuckets = 'false' } return distinct { b.ACCOUNT_ALIAS, b.ACCOUNT_ID, b.ARN as RESOURCE_KEY, b.RESOURCE_REGION, b.RESOURCE_TYPE, b.SERVICE, p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicAcls::String as BLOCK_PUBLIC_ACLS, p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicPolicy::String as BLOCK_PUBLIC_POLICY, p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.IgnorePublicAcls::String as IGNORE_PUBLIC_ACLS, p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.RestrictPublicBuckets::String as RESTRICT_PUBLIC_BUCKETS, 'S3 bucket public access controls weakened' as COMPLIANCE_FAILURE_REASON } }"}
+
+S3 buckets with potential sensitive data exposure — public access block weakened (2-source join only; 3-source S3 joins fail):
+{"queryId":"Custom_AWS_S3_Public_SensitiveData","queryText":"{ source { LW_CFG_AWS_S3 b with LW_CFG_AWS_S3_GET_PUBLIC_ACCESS_BLOCK p } filter { p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicAcls = 'false' OR p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicPolicy = 'false' OR p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.IgnorePublicAcls = 'false' OR p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.RestrictPublicBuckets = 'false' } return distinct { b.ACCOUNT_ALIAS, b.ACCOUNT_ID, b.ARN as RESOURCE_KEY, b.RESOURCE_REGION, b.RESOURCE_TYPE, b.SERVICE, p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicAcls::String as BLOCK_PUBLIC_ACLS, p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.BlockPublicPolicy::String as BLOCK_PUBLIC_POLICY, p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.IgnorePublicAcls::String as IGNORE_PUBLIC_ACLS, p.RESOURCE_CONFIG:PublicAccessBlockConfiguration.RestrictPublicBuckets::String as RESTRICT_PUBLIC_BUCKETS, 'S3 bucket public access controls weakened — potential sensitive data exposure' as COMPLIANCE_FAILURE_REASON } }"}
+
 VPCs without flow logging enabled (join to flow logs):
 {"queryId":"Custom_AWS_VPC_NoFlowLogs","queryText":"{ source { LW_CFG_AWS_EC2_VPCS vpc with LW_CFG_AWS_EC2_VPC_FLOW_LOGS log } filter { not value_exists(log.RESOURCE_CONFIG) or log.RESOURCE_CONFIG:FlowLogStatus <> 'ACTIVE' } return distinct { vpc.ACCOUNT_ALIAS, vpc.ACCOUNT_ID, vpc.ARN as RESOURCE_KEY, vpc.RESOURCE_REGION, vpc.RESOURCE_TYPE, vpc.SERVICE, case when not value_exists(log.RESOURCE_CONFIG) then 'VPC flow logging not enabled' else 'VPC flow logging not active' end as COMPLIANCE_FAILURE_REASON } }"}
 
@@ -1429,9 +1486,10 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             if not shutil.which('lacework'):
                 return None  # no CLI — skip validation
             tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.lql', delete=False)
-            tmp.write(query_text); tmp.close()
+            tmp.write(json.dumps({'queryId': 'Validate', 'queryText': query_text}))
+            tmp.close()
             try:
-                cmd = ['lacework', 'query', 'run', '-f', tmp.name, '--validate_only']
+                cmd = ['lacework', '--json', 'query', 'run', '-f', tmp.name, '--validate_only']
                 if LW_PROFILE:
                     cmd += ['--profile', LW_PROFILE]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
@@ -1457,10 +1515,11 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
             end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
             tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.lql', delete=False)
-            tmp.write(query_text); tmp.close()
+            tmp.write(json.dumps({'queryId': 'Generate', 'queryText': query_text}))
+            tmp.close()
             try:
-                cmd = ['lacework', 'query', 'run', '-f', tmp.name,
-                       '--start', start, '--end', end, '--json']
+                cmd = ['lacework', '--json', 'query', 'run', '-f', tmp.name,
+                       '--start', start, '--end', end]
                 if LW_PROFILE:
                     cmd += ['--profile', LW_PROFILE]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -1495,9 +1554,13 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 val_err = _validate_lql(query_text)
                 if val_err:
                     if attempt < MAX_RETRIES - 1:
+                        hint = ''
+                        if 'Cannot find defined relationships' in val_err:
+                            hint = ('\nHINT: This datasource combination has no pre-defined relationship. '
+                                    'Use only 2 sources max for S3 queries. Never join more than 2 LW_CFG_AWS_S3_* datasources together.')
                         messages.append({'role': 'assistant', 'content': json.dumps(result)})
                         messages.append({'role': 'user', 'content': (
-                            f'That LQL query failed validation with this error:\n{val_err}\n\n'
+                            f'That LQL query failed validation with this error:\n{val_err}{hint}\n\n'
                             'Fix the LQL and return only the corrected JSON object.'
                         )})
                         result = _call_claude(messages)
@@ -1508,9 +1571,16 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                     cached_rows = rows
                     break
                 if attempt < MAX_RETRIES - 1:
+                    hint = ''
+                    if 'Cannot find defined relationships' in err:
+                        hint = ('\nHINT: This datasource combination does not have a pre-defined relationship in Lacework. '
+                                'Use fewer sources (max 2 for S3 joins), or rewrite using a single datasource. '
+                                'Do NOT join LW_CFG_AWS_S3_GET_PUBLIC_ACCESS_BLOCK with LW_CFG_AWS_S3_GET_BUCKET_ENCRYPTION — use only one of them joined with LW_CFG_AWS_S3.')
+                    elif 'invalid query' in err.lower() or 'json' in err.lower():
+                        hint = '\nHINT: The query file must be valid LQL syntax inside { source { ... } filter { ... } return distinct { ... } }'
                     messages.append({'role': 'assistant', 'content': json.dumps(result)})
                     messages.append({'role': 'user', 'content': (
-                        f'That LQL query failed with this error:\n{err}\n\n'
+                        f'That LQL query failed with this error:\n{err}{hint}\n\n'
                         'Fix the LQL and return only the corrected JSON object.'
                     )})
                     result = _call_claude(messages)
@@ -1547,7 +1617,11 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 msg = err_body.decode()[:400]
             self.send_json(e.code, json.dumps({'error': msg}).encode())
         except Exception as e:
-            self.send_json(500, json.dumps({'error': str(e)}).encode())
+            msg = str(e)
+            if 'Name or service not known' in msg or 'urlopen error' in msg:
+                msg = (f'Cannot reach AI gateway ({UPSTREAM}). '
+                       'Check that ANTHROPIC_BASE_URL in .env points to your real gateway and restart the server.')
+            self.send_json(500, json.dumps({'error': msg}).encode())
 
     def serve_lql_run(self):
         try:
@@ -1568,9 +1642,10 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
         if shutil.which('lacework'):
             try:
                 tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.lql', delete=False)
-                tmp.write(query_text); tmp.close()
-                cmd = ['lacework', 'query', 'run', '-f', tmp.name,
-                       '--start', start, '--end', end, '--json']
+                tmp.write(json.dumps({'queryId': 'Run', 'queryText': query_text}))
+                tmp.close()
+                cmd = ['lacework', '--json', 'query', 'run', '-f', tmp.name,
+                       '--start', start, '--end', end]
                 if LW_PROFILE:
                     cmd += ['--profile', LW_PROFILE]
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -1580,10 +1655,17 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                     rows = raw.get('data', raw) if isinstance(raw, dict) else raw
                     if not isinstance(rows, list):
                         rows = []
-                    self.send_json(200, json.dumps({
-                        'rows': rows, 'count': len(rows), 'total': len(rows),
-                        'startTime': start, 'endTime': end,
-                    }).encode())
+                    resp_body = {'rows': rows, 'count': len(rows), 'total': len(rows),
+                                 'startTime': start, 'endTime': end}
+                    if LW_READY:
+                        try:
+                            tk, burl = self._lw_token()
+                            enrichment = self._enrich_lql_with_api(tk, burl, query_text, rows)
+                            if enrichment:
+                                resp_body['api_enrichment'] = enrichment
+                        except Exception:
+                            pass
+                    self.send_json(200, json.dumps(resp_body).encode())
                     return
                 cli_err = (result.stderr or result.stdout or '').strip()
             except subprocess.TimeoutExpired:
@@ -1622,10 +1704,16 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             data = json.loads(resp.read())
             rows  = data.get('data', [])
             total = data.get('paging', {}).get('totalRows', len(rows))
-            self.send_json(200, json.dumps({
-                'rows': rows, 'count': len(rows), 'total': total,
-                'startTime': start, 'endTime': end,
-            }).encode())
+            resp_body = {'rows': rows, 'count': len(rows), 'total': total,
+                         'startTime': start, 'endTime': end}
+            if LW_READY:
+                try:
+                    enrichment = self._enrich_lql_with_api(token, base_url, query_text, rows)
+                    if enrichment:
+                        resp_body['api_enrichment'] = enrichment
+                except Exception:
+                    pass
+            self.send_json(200, json.dumps(resp_body).encode())
         except urllib.error.HTTPError as e:
             err_body = e.read()
             try:
