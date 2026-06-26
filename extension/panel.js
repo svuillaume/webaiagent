@@ -51,8 +51,8 @@ const SYSTEM_PROMPT = `You are a CISO-level security analyst. For security findi
 2. **Executive Review** — \`rpt-section\`: 2 sentences max. What is at risk, what is the business impact. End with **Decision required:** one sentence.
 3. **Business Impact** divider + 2–3 bullet points (plain markdown) on what happens if not fixed
 4. **Affected Resources** divider + resource cards (one per asset)
-5. **How to Fix** divider + action items with urgency. Add a fenced CLI/console snippet per step where relevant.
-6. **Next Steps** — \`rpt-section ok\` or \`rpt-section\`: single sentence — who does what by when.
+5. **How to Fix** divider + action items — each MUST include the exact CLI/console command in a fenced code block (e.g. \`apt-get install pkg=version\`, not just "apply patch"). Urgency: NOW / 24h / 7d / 30d. Owner: security / DevOps / cloud admin.
+6. **Next Steps** — \`rpt-section ok\` or \`rpt-section\`: one sentence — who does what by when.
 
 Rules:
 - Never use markdown tables for structured data — use resource cards instead.
@@ -1681,7 +1681,13 @@ el('cve-analyse').addEventListener('click', () => {
   send(true);
 });
 
-const EXEC_REPORT_TEMPLATE = `Write the full security report using the structure defined in your system prompt.`;
+const EXEC_REPORT_TEMPLATE = `Write a security report following the 5-section structure in your system prompt.
+CRITICAL: Section 5 "How to Fix" MUST include:
+- A specific numbered action item per fix (use rpt-action components)
+- For each action: the exact CLI command, console step, or config change needed (fenced code block)
+- Urgency label: NOW / 24h / 7d / 30d based on severity and exploitation status
+- Who owns the fix (security team / DevOps / cloud admin)
+Do NOT write vague actions like "apply patches" — write the exact command or step.`;
 
 function buildCveAnalysisPrompt(d, fgOutbreaks) {
   const intel        = d.cveIntel || {};
@@ -1775,7 +1781,7 @@ function buildCveAnalysisPrompt(d, fgOutbreaks) {
     `2. Executive Review — 2 sentences: what is vulnerable, what is the blast radius. Decision required: patch or isolate.`,
     `3. Business Impact — 2–3 bullets: data breach risk, compliance exposure, operational disruption`,
     `4. Affected Resources — one resource card per host. rpt-resource-name must contain the FULL hostname (do not truncate). rpt-resource-meta must include: severity badge, CSP account ID, region, internet-exposed flag if applicable.`,
-    `5. How to Fix + Next Steps — patch command, urgency, who owns it`,
+    `5. How to Fix + Next Steps — MUST include the exact patch command (e.g. apt-get install <pkg>=<version>, yum update, docker pull <image>:<tag>), urgency (NOW/24h/7d), and who owns it. Use fenced code blocks for commands.`,
   );
   if (intel.kev?.inKev)            lines.push(`NOTE: This CVE is in CISA KEV — actively exploited. Urgency is NOW.`);
   if (intel.epss?.percentile > 0.9) lines.push(`NOTE: EPSS top 10th percentile — patch within 24h.`);
