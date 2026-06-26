@@ -2235,7 +2235,7 @@ async function loadLqlQueries() {
     if (data.error) throw new Error(data.error);
     _lqlQueries = data.queries || [];
     if (!_lqlQueries.length) {
-      sel.innerHTML = '<option value="">No saved queries found</option>';
+      sel.innerHTML = '<option value="">No saved queries — use ✨ Assisted Investigation</option>';
       return;
     }
     sel.innerHTML = '<option value="">— select a query —</option>';

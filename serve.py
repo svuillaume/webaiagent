@@ -1274,9 +1274,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def serve_lql_queries(self):
         if not LQL_QUERIES_DIR or not os.path.isdir(LQL_QUERIES_DIR):
-            self.send_json(503, json.dumps({
-                'error': 'LQL_QUERIES_DIR not set or not found — add it to .env'
-            }).encode())
+            self.send_json(200, json.dumps({'queries': []}).encode())
             return
         files = sorted(f for f in os.listdir(LQL_QUERIES_DIR) if f.endswith('.yaml'))
         queries = []
