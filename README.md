@@ -1,6 +1,6 @@
-# Web AI Agent — Chrome Extension
+# FortiAIScout — Chrome Extension
 
-> **License**: Apache 2.0 — see [LICENSE](LICENSE) | **Status**: BETA
+> **License**: Apache 2.0 — see [LICENSE](LICENSE) | **Status**: Alpha — early-stage release for testing and feedback; expect rough edges and rapid change.
 
 A Chrome side panel that brings AI-powered cloud security to your browser. Ask questions about any webpage, scan code for vulnerabilities, run cloud security queries, and analyze threats — all without leaving your browser tab.
 
@@ -12,54 +12,90 @@ Works with **FortiCNAPP** (and any CNAPP platform built on Lacework).
 
 | Feature | Description |
 |---|---|
-| 💬 **AI Chat** | CISO-level AI assistant with automatic web search for up-to-date information |
+| 💬 **AI Chat** | Security-engineer-focused AI assistant with automatic web search for up-to-date information |
 | 📖 **Read Page** | Loads the current webpage into context so you can ask questions about it |
 | ⚡ **TL;DR** | Instant plain-English summary of any page |
-| 🚨 **FortiGuard Alerts** | Live outbreak alert feed from FortiGuard Labs — button flashes red when active threats are detected in the last 5 days |
+| 🖱 **Selection-to-chat** | Right-click any selected text (including inside Chrome's built-in PDF viewer) → "Ask AI about selection" to bring it straight into the chat box |
 | 🛡 **Code Scanner** | Scans code on the current page or a GitHub repo for vulnerabilities, misconfigurations, and exposed secrets |
-| 📋 **Compliance Reports** | Generates compliance PDF reports (CIS, NIST, PCI-DSS, SOC 2, HIPAA, ISO 27001, and 50+ frameworks). Full text extracted server-side — no poppler/pdftotext required. |
+| 📋 **Compliance Reports** | Generates compliance PDF reports (CIS, NIST, PCI-DSS, SOC 2, HIPAA, ISO 27001, and 50+ frameworks) |
 | 📊 **AI Assist / LQL** | Describe what you want to find — the AI writes the LQL query, validates it, and retries up to 9 times if it fails. Falls back to a scoping conversation if the objective needs clarification. |
-| 🔬 **Attack Surface Analyzer** | CVE lookup with a threat radar chart (CVSS, EPSS, KEV, FortiGuard, PoC, No Patch, Exposure), FortiGuard outbreak scrape, and a full AI-generated executive report. |
-| 🧾 **CISO-Level Reports** | All reports follow a consistent 5-section executive structure with exact CLI fix commands and urgency labels. |
-| ⚖️ **Regulatory Obligations** | Reports auto-detect cloud regions and inject applicable frameworks: PIPEDA (Canada), GDPR/NIS2 (EU), NIST/HIPAA/CIRCIA (US), UK GDPR, APAC privacy laws, and ISO 27001 baseline. |
-| 📋 **Copy / PDF Export** | One-click copy and PDF export on every AI response. |
+| 🔬 **Attack Surface Analyzer** | CVE lookup with a computed CVSS/EPSS/exposure risk-profile radar chart, FortiGuard outbreak scrape, and a full AI-generated incident report |
+| 🧾 **Incident-style Reports** | LQL and CVE reports follow a consistent Status → Affected Resources → Remediation → Critical Context → Compliance Deadlines → Preserve Evidence structure, with exact CLI fix commands |
+| ⚖️ **Regulatory Obligations** | Reports auto-detect cloud regions and inject applicable frameworks: PIPEDA (Canada), GDPR/NIS2 (EU), NIST/HIPAA/CIRCIA (US), UK GDPR, APAC privacy laws, and ISO 27001 baseline |
+| 📋 **Copy / PDF Export** | One-click copy and PDF export on every AI response |
+| 💾 **TokenIQ compression** *(optional)* | Route chat through a local token-compression proxy ([Headroom](https://github.com/chopratejas/headroom) under the hood) to cut token usage on large report-generation prompts — toggle live from a badge in the panel, no restart needed |
 
 ---
 
 ## What does it do?
 
-Think of it as a CISO-level security analyst sitting next to you while you browse. You open a side panel in Chrome, and from there you can:
+Think of it as a security engineer sitting next to you while you browse. You open a side panel in Chrome, and from there you can:
 
 **General AI assistant (works on any webpage)**
 
 - **Chat** — ask the AI anything; it searches the web automatically when it needs fresh information
 - **Read this page** — loads the page you're on so you can ask questions about it
 - **TL;DR** — plain-English summary of any page in seconds
-- **FortiGuard** — live FortiGuard threat intelligence feed; button flashes red on active outbreak alerts
+- **Select text → right-click → "Ask AI about selection"** — works on regular pages and inside Chrome's PDF viewer
+- **📊 TokenIQ Dashboard** *(inside the FortiCNAPP menu)* — opens the token-savings dashboard, if configured
 
 **Cloud security tools (requires FortiCNAPP)**
 
 | Button | What it does |
 |---|---|
 | 🛡 **Scan Code** | Scans code on the current page or a GitHub repo for security vulnerabilities and exposed secrets |
-| 📋 **Compliance** | Generates a compliance PDF report; text is extracted server-side and loaded into AI context automatically |
-| 📊 **AI Assist** | Describe what you want to find — AI writes the LQL query, self-heals through up to 9 retries, and generates an executive report |
-| 🔬 **Attack Surface** | CVE lookup with threat radar, PoC/patch signals from FortiGuard, CISA KEV, and a full executive report with regulatory obligations |
+| 📋 **Compliance** | Generates a compliance PDF report, opened in a new tab |
+| 📊 **AI Assist** | Describe what you want to find — AI writes the LQL query, self-heals through up to 9 retries, and generates an incident report |
+| 🔬 **Attack Surface** | CVE lookup with a computed risk-profile radar, PoC/patch signals from FortiGuard, CISA KEV, and a full incident report with regulatory obligations |
 | 💬 **Community** | Opens the FortiCNAPP community feed |
 
 > If a button is greyed out, hover over it — a tooltip explains what's needed to enable it.
 
 ---
 
-## Executive Reports — Structure
+## End-to-End Workflow
 
-Every security report (CVE, LQL, compliance) follows the same 5-section structure:
+Same shape for every flow — Chat/TL;DR, Code Scan, Compliance, AI Assist, Attack Surface. Using Attack Surface as the concrete example:
 
-1. **Metric strip** — critical / high / medium counts + affected resource count at a glance
-2. **Executive Review** — 2 sentences for a board member + **Decision required**
-3. **Business Impact** — 2–3 bullets: data breach risk, compliance exposure, operational disruption
-4. **Affected Resources** — one card per impacted asset with full resource name, account ID, region, and severity
-5. **How to Fix + Next Steps** — numbered action items with exact CLI commands, urgency (NOW / 24h / 7d / 30d), owner, and region-aware regulatory obligations
+```
+1. SETUP (once)
+   ./setup.sh → paste gateway URL/key → chrome://extensions → Load unpacked
+     ↓
+2. OPEN THE PANEL
+   Click the toolbar icon — side panel opens alongside whatever tab you're on
+     ↓
+3. ASK
+   🔰 FortiCNAPP → 🔬 Attack Surface → type "CVE-2021-44228" → 🔎 Search
+   (AI Assist: 📊 AI Assist → "S3 buckets without encryption" → ▶ Run Query)
+     ↓
+4. THE AI DOES THE WORK
+   FortiCNAPP + FortiGuard + NVD + EPSS + CISA KEV queried in parallel
+   (AI Assist: LQL generated → validated → retried up to 9x → run → REST-enriched)
+     ↓
+5. INCIDENT REPORT COMES BACK
+   Status → Affected Resources → Remediation (exact commands) →
+   Critical Context (+ risk-profile radar) → Compliance Deadlines → Preserve Evidence
+     ↓
+6. ACT ON IT
+   Copy the fix commands · ⬇ Export PDF · ask a follow-up right in the same chat
+```
+
+Every step after (1) happens without leaving the tab you're on. Setup is a one-time cost — after that it's ask → report → act.
+
+---
+
+## Incident Reports — Structure
+
+Every LQL ("Advanced Analytics") and CVE ("Attack Surface") report follows the same structure, minimal and engineering-focused rather than a board-deck format:
+
+1. **Status** — severity + "N of total (pct%)" one-liner
+2. **Affected Resources** — a Markdown table, one row per resource, with a 🔴/🟠/🟡 status column
+3. **Remediation — Execute NOW** — exact commands per resource (real names/IDs, never placeholders), grouped by account/region, plus a **Verify** block to confirm the fix took effect
+4. **Critical Context** — facts only from the data actually provided (log gaps, confirmed reachability, related findings); for CVE reports this includes a computed risk-profile radar chart (Attack Vector, Privileges Required, Scope Impact, EPSS Percentile, Internet Exposure)
+5. **Compliance Deadlines** — only when a regulated region is affected: a table of Regulation / Due / Owner / Action
+6. **Preserve Evidence** — what to retain for this finding type and why
+
+Sections without supporting data are omitted rather than padded out.
 
 ---
 
@@ -74,7 +110,7 @@ When you search for a CVE, six sources are queried in parallel:
 5. **EPSS (first.org)** — exploit probability score and percentile
 6. **CISA KEV** — whether actively exploited in the wild
 
-All six feed into a **threat radar chart** (7 axes: CVSS, EPSS, KEV, FortiGuard, PoC, No Patch, Exposed%) and a structured executive report.
+All six feed into the incident report's **Critical Context** section, including a 5-axis risk-profile radar chart (Attack Vector, Privileges Required, Scope Impact, EPSS Percentile, Internet Exposure) computed directly from the CVSS vector and exposure data — not left to the model to draw.
 
 **Regulatory obligations** are injected based on the cloud region of each affected host:
 
@@ -94,7 +130,9 @@ All six feed into a **threat radar chart** (7 axes: CVSS, EPSS, KEV, FortiGuard,
 ```
 User types objective
   ↓
-Claude generates LQL query
+Relevant excerpts pulled from the LQL reference doc (keyword-matched, not the whole 530KB file)
+  ↓
+Claude generates LQL query, grounded in real field names from those excerpts
   ↓
 serve.py validates syntax (lacework CLI --validate_only)
   ↓ fails → error + hint → Claude fixes → retry (up to 9 attempts)
@@ -104,8 +142,10 @@ serve.py runs query for real
   ↓ passes
 Rows returned → enriched with REST API (alerts, inventory, S3 sensitivity tags)
   ↓
-Claude writes executive report
+Claude writes incident report
 ```
+
+If the objective doesn't map to a known LQL-modeled resource type, `searchTerm` falls back to a FortiCNAPP Inventory REST search instead of forcing a bad LQL query. If the objective is actually a CVE question, it redirects straight to the Attack Surface flow instead — CVE data isn't in LQL.
 
 If all 9 attempts fail, a scoping conversation starts — Claude asks 2–4 clarifying questions and proposes a refined objective with a **⟳ Run query** button.
 
@@ -175,17 +215,19 @@ When the script shows green `[OK]`, the server is running.
 1. Open `chrome://extensions`
 2. Enable **Developer mode** (top-right toggle)
 3. Click **Load unpacked** → select the `extension/` folder
-4. Pin the Web AI Agent icon from the toolbar 🧩
+4. Pin the FortiAIScout icon from the toolbar 🧩
 
 ---
 
 ### Step 4 — Open and use it
 
-Click the Web AI Agent icon. The status dot should be **green**.
+Click the FortiAIScout icon. The status dot should be **green**.
 
 - Type anything in the chat box to start
 - Click **🔰 FortiCNAPP** for security tools
 - Click **🔬** for CVE / attack surface analysis
+
+See [End-to-End Workflow](#end-to-end-workflow) above for a full ask-to-report walkthrough.
 
 ---
 
@@ -207,11 +249,11 @@ Stop-Process -Id (Get-Content .serve.pid)           # Windows
 |---|---|
 | Status dot grey | Server not running — run `./setup.sh` again |
 | Security buttons greyed out | FortiCNAPP credentials missing — re-run setup and answer **y** |
-| Compliance PDF shows no text | Restart `serve.py` — pure-Python extraction is built in, no poppler required |
+| Compliance PDF has no "ask about it" button | Removed on purpose — select text in the opened PDF and right-click → "Ask AI about selection" instead |
 | CVE returns 0 hosts | CVE may not affect your environment, or extend the time window beyond 7 days |
-| FortiGuard button flashing red | Active outbreak alert — click to read it |
 | LQL keeps failing | Check console for `[LQL] attempt N/9` — error message shows the datasource/syntax issue |
 | Windows "execution policy" error | PowerShell as Admin: `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
+| "via TokenIQ" routing fails | The TokenIQ (Headroom) sidecar isn't running/healthy — `docker compose up -d headroom`, or click the routing badge to switch back to "direct to AI GW" |
 
 ---
 
@@ -248,10 +290,13 @@ python3 serve.py        # http://localhost:45321
 
 | Variable | Description |
 |---|---|
-| `ANTHROPIC_BASE_URL` | AI gateway endpoint URL |
+| `ANTHROPIC_BASE_URL` | AI gateway endpoint URL — always the real gateway, never overwritten by the Headroom toggle |
 | `BIFROST_VIRTUAL_KEY` | Gateway virtual key (`sk-bf-…`) |
-| `ANTHROPIC_DEFAULT_MODEL` | Model for chat and LQL Generate (default: `claude-haiku-4-5`) |
+| `ANTHROPIC_DEFAULT_MODEL` | Model for chat and LQL Generate. Kept in sync automatically when you change the model dropdown in the extension. |
 | `LQL_QUERIES_DIR` | Path to folder with `.yaml` LQL query files (optional — panel opens cleanly if not set) |
+| `HEADROOM_URL` | *(optional)* How `serve.py` reaches the [Headroom](https://github.com/chopratejas/headroom) sidecar server-side — `http://headroom:8787` in Docker, `http://127.0.0.1:8787` running `serve.py` directly |
+| `HEADROOM_DASHBOARD_URL` | *(optional)* The browser-reachable address for the same proxy — always `http://127.0.0.1:8787` |
+| `HEADROOM_ENABLED` | `1`/`0` — whether chat currently routes through Headroom. Toggled live from the extension's routing badge, not meant to be hand-edited. |
 
 FortiCNAPP credentials come from `~/.lacework.toml` (created by `lacework configure`).
 
@@ -265,7 +310,6 @@ FortiCNAPP credentials come from `~/.lacework.toml` (created by `lacework config
 | POST | `/sbom` | CycloneDX SBOM via lacework CLI |
 | POST | `/compliance` | Generate compliance PDF |
 | GET | `/compliance/list` | List available compliance frameworks |
-| GET | `/compliance/latest-text` | Extract text from last PDF (pure Python zlib, no pdftotext needed) |
 | GET | `/lql/queries` | List saved `.yaml` LQL files (empty list if dir not set) |
 | POST | `/lql/run` | Execute LQL query |
 | POST | `/lql/cve` | CVE attack surface: affected hosts + containers |
@@ -274,23 +318,28 @@ FortiCNAPP credentials come from `~/.lacework.toml` (created by `lacework config
 | GET | `/fortiguard/outbreak-by-cve?cveId=` | Outbreak alerts matching a CVE |
 | GET | `/fortiguard/outbreak-detail?slug=` | Scrape FortiGuard page for PoC/patch/timeline signals |
 | GET | `/fortiguard/cve-intel?cveId=` | Aggregate: EPSS + CISA KEV + NVD CVSS + FortiGuard |
+| GET | `/headroom/stats` | Lifetime token savings from the Headroom sidecar |
+| POST | `/headroom/toggle` | Switch chat routing between direct-to-gateway and via-Headroom |
+| POST | `/model` | Persist the extension's model picker as `ANTHROPIC_DEFAULT_MODEL` |
 
 ### Docker
 
 ```bash
-docker compose up -d           # first run
+docker compose up -d           # first run — also starts the optional Headroom sidecar
+docker compose up -d webai     # start only webai, skipping Headroom
 docker compose up --build -d   # after code changes
 docker compose down
 ```
 
-`poppler-utils` is included in the image for highest-quality PDF extraction. Pure-Python fallback used when running outside Docker.
+The `headroom` service is inert until `HEADROOM_ENABLED=1`, so leaving it running costs nothing. It's started with `--no-ccr-inject-tool` — without that flag, Headroom's reversible-compression feature buffers streaming responses in a way that can't handle the `server_tool_use` blocks this app's web-search tool produces, causing intermittent 502s.
 
 ### Architecture
 
 ```
 Chrome Extension (extension/)
   │
-  ├─ Chat ──────────► AI Gateway (Bifrost / Portkey / LiteLLM / Helicone)
+  ├─ Chat ──────────► AI Gateway (Bifrost / Portkey / LiteLLM / Helicone)      [HEADROOM_ENABLED=0]
+  │              or ► serve.py /proxy ► Headroom sidecar ► AI Gateway         [HEADROOM_ENABLED=1]
   │                        └──► Claude API  (web_search runs server-side)
   │
   └─ Security tools ► serve.py  localhost:45321

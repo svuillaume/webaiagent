@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Web AI Agent — setup script (macOS / Linux)
+# FortiAIScout — setup script (macOS / Linux)
 # Runs serve.py directly — no Docker required.
 
 set -euo pipefail
@@ -14,7 +14,7 @@ error()  { echo -e "${RED}✗${NC} $*"; exit 1; }
 ask()    { echo -e "${CYAN}?${NC}  $*"; }
 
 echo ""
-echo "  🌐 Web AI Agent — Setup"
+echo "  🌐 FortiAIScout — Setup"
 echo "  ──────────────────────────"
 echo ""
 
@@ -132,7 +132,7 @@ fi
 
 # ── Step 5: start serve.py ─────────────────────────────────────────────────────
 echo ""
-info "Starting Web AI Agent (python3 serve.py)..."
+info "Starting FortiAIScout (python3 serve.py)..."
 nohup python3 serve.py > serve.log 2>&1 &
 echo $! > .serve.pid
 
@@ -148,7 +148,7 @@ done
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
-echo -e "  ${GREEN}✔ Web AI Agent ready!${NC}"
+echo -e "  ${GREEN}✔ FortiAIScout ready!${NC}"
 echo ""
 echo "  Chatbox  →  http://localhost:45321"
 echo "  Log      →  ./serve.log   (tail -f serve.log)"

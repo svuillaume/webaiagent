@@ -1,4 +1,4 @@
-# Web AI Agent — Windows Setup Script (PowerShell)
+# FortiAIScout — Windows Setup Script (PowerShell)
 # Run with: .\setup.ps1
 # Requires PowerShell 5.1+ (built into Windows 10/11)
 
@@ -16,7 +16,7 @@ Set-Location $ScriptDir
 
 Write-Host ""
 Write-Host "  ╔══════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "  ║       Web AI Agent  —  Windows Setup     ║" -ForegroundColor Cyan
+Write-Host "  ║       FortiAIScout  —  Windows Setup     ║" -ForegroundColor Cyan
 Write-Host "  ╚══════════════════════════════════════════╝" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "  This script will:"
@@ -64,7 +64,7 @@ Info "Python found: $(& $PyCmd --version 2>&1)"
 # ═══════════════════════════════════════════════════════════════
 Step 2 "Configure AI Gateway credentials"
 # ═══════════════════════════════════════════════════════════════
-Note "The Web AI Agent needs an AI gateway URL and API key to call Claude."
+Note "The FortiAIScout needs an AI gateway URL and API key to call Claude."
 Note "These are stored in the .env file in this folder."
 
 if (-not (Test-Path ".env")) {
@@ -281,14 +281,14 @@ Note "  2. Enable 'Developer mode' (toggle in the top-right corner)"
 Note "  3. Click 'Load unpacked'"
 Note "  4. Select the 'extension' folder inside this project:"
 Note "     $ScriptDir\extension"
-Note "  5. The Web AI Agent icon will appear in your Chrome toolbar"
-Note "  6. Pin it: click the puzzle piece icon → pin 'Web AI Agent'"
+Note "  5. The FortiAIScout icon will appear in your Chrome toolbar"
+Note "  6. Pin it: click the puzzle piece icon → pin 'FortiAIScout'"
 
 # ═══════════════════════════════════════════════════════════════
 Write-Host ""
 Write-Host "  ══════════════════════════════════════════════" -ForegroundColor DarkGray
 if ($ready) {
-    Write-Host "  [OK] Setup complete — Web AI Agent is running!" -ForegroundColor Green
+    Write-Host "  [OK] Setup complete — FortiAIScout is running!" -ForegroundColor Green
 } else {
     Write-Host "  [!]  Setup complete with warnings — see above." -ForegroundColor Yellow
 }

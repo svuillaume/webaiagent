@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Web AI Agent — stop and clean up
+# FortiAIScout — stop and clean up
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -9,7 +9,7 @@ info() { echo -e "${GREEN}▶${NC} $*"; }
 warn() { echo -e "${YELLOW}⚠${NC}  $*"; }
 
 echo ""
-echo "  🛑 Web AI Agent — Uninstall"
+echo "  🛑 FortiAIScout — Uninstall"
 echo "  ──────────────────────"
 echo ""
 
@@ -57,5 +57,5 @@ echo -e "  ${GREEN}✔ All stopped and cleaned up${NC}"
 echo ""
 echo "  To fully remove the Chrome extension:"
 echo "    1. Open chrome://extensions in your browser"
-echo "    2. Find 'Web AI Agent' and click Remove"
+echo "    2. Find 'FortiAIScout' and click Remove"
 echo ""

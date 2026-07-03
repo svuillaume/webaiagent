@@ -15,7 +15,7 @@ RUN --mount=type=secret,id=lacework_toml,target=/root/.lacework.toml \
     || echo "WARNING: SCA component install failed — CodeSec/SBOM will be unavailable"
 
 WORKDIR /app
-COPY serve.py chatbox.html ./
+COPY serve.py chatbox.html FortiCNAPP-LQL_Reference_Guide.txt ./
 COPY extension/ ./extension/
 
 # .env and lacework config injected at runtime via env vars or volume

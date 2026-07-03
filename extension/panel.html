@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>Web AI Agent</title>
+<title>FortiAIScout</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -66,14 +66,12 @@ body {
 }
 
 /* ── Row 1: Config bar ───────────────────────────────────────────────────── */
+/* No longer a visible bar — only holds hidden gateway-credential inputs now that gateway/model
+   selects and the status dot moved into the action bar / Admin menu. Zero padding so it doesn't
+   render as an empty strip (all children are display:none). */
 #config-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 8px 12px;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
 }
 
 .brand {
@@ -114,7 +112,7 @@ body {
 
 /* Status dot: ::before so setStatus(text, cls) works unchanged */
 #status {
-  margin-left: auto;
+  margin-left: auto; /* pushes status (and Clear right after it) to the far right of #action-bar */
   font-size: 10px;
   color: var(--dim);
   transition: color .2s;
@@ -138,10 +136,23 @@ body {
 #status.err::before  { background: var(--err); }
 #status.busy { color: var(--muted); }
 #status.busy::before { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
+
+.headroom-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: default;
+}
+.headroom-badge.ok { color: var(--ok); border-color: rgba(52,211,153,.3); }
+#routing-badge { cursor: pointer; margin-left: auto; transition: border-color .12s, background .12s; }
+#routing-badge:hover { background: var(--surface3); border-color: var(--dim); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
-@keyframes fg-flash { 0%,100% { background: var(--surface2); color: var(--text); border-color: var(--border); }
-  50% { background: var(--err-bg); color: var(--err); border-color: rgba(248,113,113,.4); } }
-#fortiguard-feed.fg-alert { animation: fg-flash 1.4s ease-in-out infinite; }
 
 /* ── Row 2: Action bar ───────────────────────────────────────────────────── */
 #action-bar {
@@ -236,6 +247,59 @@ body {
 .fcnapp-item.accent:hover { color: var(--accent); background: var(--accent-bg); }
 .fcnapp-item.success:hover{ color: var(--ok);     background: var(--ok-bg); }
 .fcnapp-item.danger:hover { color: var(--err);    background: var(--err-bg); }
+.fcnapp-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+
+/* ── Admin dropdown: gateway, model, TokenIQ, community ──────────────────── */
+#admin-wrap { position: relative; flex-shrink: 0; }
+#admin-btn  { gap: 5px; }
+#admin-btn .caret { font-size: 8px; opacity: .6; transition: transform .15s; }
+#admin-btn.open .caret { transform: rotate(180deg); }
+.admin-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex-shrink: 0;
+  transition: background .2s;
+}
+.admin-dot.ok { background: var(--ok); }
+#admin-menu {
+  display: none;
+  position: fixed;
+  z-index: 200;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  min-width: 190px;
+  box-shadow: 0 4px 16px rgba(0,0,0,.35);
+}
+#admin-menu.open { display: flex; flex-direction: column; gap: 3px; }
+.admin-menu-label {
+  font: 700 9px/1 var(--sans);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--dim);
+  padding: 3px 2px 1px;
+}
+.admin-select {
+  font-family: var(--sans);
+  font-size: 11px;
+  background: var(--surface3);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: 6px;
+  outline: none;
+  width: 100%;
+}
+.admin-select:focus { border-color: var(--accent); }
+.admin-item.headroom-badge {
+  width: 100%;
+  text-align: left;
+  border-radius: 6px;
+  padding: 7px 10px;
+  box-sizing: border-box;
+}
 /* ── SBOM format picker sub-menu ─────────────────────────────────────────── */
 #sbom-picker {
   display: none;
@@ -412,6 +476,61 @@ body {
 .drawer-status { font-size: 10px; color: var(--dim); }
 .drawer-status.ok  { color: var(--ok); }
 .drawer-status.err { color: var(--err); }
+
+/* Cute dog running around + pooping randomly while AI Assist fetches/retries/enriches, with a
+   human sprinting after it to scoop each one up — pure fun, no functional role. panel.js handles
+   the roaming/pooping/chasing logic; these classes are just the visual pieces. */
+.lql-dog, .lql-runner, .lql-poop {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,.35));
+}
+.lql-dog {
+  display: none;
+  font-size: 42px;
+  line-height: 1;
+  transform-origin: 50% 80%;
+  /* Spring/overshoot easing instead of a plain ease curve — snaps to the new spot and settles
+     with a tiny bounce-back, reads as far more "alive" than a linear glide. */
+  transition: left .32s cubic-bezier(.34,1.56,.64,1), top .32s cubic-bezier(.34,1.56,.64,1);
+  animation: dog-trot .32s cubic-bezier(.45,0,.55,1) infinite;
+  --dir: 1; /* set via JS inline style (not a class) — a static .transform rule would be
+               silently overridden every frame by the keyframe animation's own transform */
+}
+.lql-runner {
+  display: none;
+  font-size: 38px;
+  line-height: 1;
+  transition: left .28s cubic-bezier(.22,1,.36,1), top .28s cubic-bezier(.22,1,.36,1);
+  animation: runner-sprint .22s ease-in-out infinite;
+  --dir: 1;
+}
+.lql-poop {
+  font-size: 28px;
+  line-height: 1;
+  animation: poop-plop .28s cubic-bezier(.34,1.56,.64,1);
+}
+.lql-poop.scooped { animation: poop-scoop .22s cubic-bezier(.55,0,.85,.35) forwards; }
+
+@keyframes dog-trot {
+  0%, 100% { transform: translateY(0)    rotate(0deg)  scaleX(var(--dir, 1))          scale(1); }
+  40%      { transform: translateY(-9px) rotate(-9deg) scaleX(var(--dir, 1))          scale(1.03, .96); }
+  70%      { transform: translateY(0)    rotate(3deg)  scaleX(var(--dir, 1))          scale(.97, 1.03); }
+}
+@keyframes runner-sprint {
+  0%, 100% { transform: translateY(0)   rotate(0deg)  scaleX(var(--dir, 1)); }
+  50%      { transform: translateY(-7px) rotate(10deg) scaleX(var(--dir, 1)); }
+}
+@keyframes poop-plop {
+  0%   { opacity: 0; transform: scale(0)    translateY(-10px); }
+  60%  { opacity: 1; transform: scale(1.25) translateY(1px); }
+  100% { opacity: 1; transform: scale(1)    translateY(0); }
+}
+@keyframes poop-scoop {
+  0%   { opacity: 1; transform: scale(1)   translateY(0)    rotate(0deg); }
+  100% { opacity: 0; transform: scale(.2) translateY(-22px) rotate(140deg); }
+}
 
 .drawer-results {
   flex: 1;
@@ -632,10 +751,12 @@ body {
   font-style: italic;
 }
 
-#lql-gen-preview pre {
+#lql-gen-preview pre,
+.lql-query-preview pre {
   font-family: var(--mono);
   font-size: 10.5px;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
   color: var(--text);
   background: var(--surface2);
   border: 1px solid var(--border);
@@ -643,8 +764,21 @@ body {
   padding: 10px 12px;
   overflow-x: auto;
   line-height: 1.5;
-  margin: 0;
+  margin: 6px 0 0;
 }
+.lql-query-preview {
+  margin: 0 0 8px;
+}
+.lql-query-preview summary {
+  font: 600 10px/1 var(--sans);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  padding: 2px 0;
+}
+.lql-query-preview summary:hover { color: var(--text); }
 
 /* LQL tabs */
 .lql-tabs {
@@ -725,97 +859,78 @@ body {
 
 @keyframes fadein { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; } }
 
-/* ── Bubble rows ── */
+/* ── Turn rows — flat, labeled log entries (no bubbles/avatars) ── */
 .turn {
   display: flex;
-  align-items: flex-end;
-  gap: 7px;
-  padding: 2px 10px;
+  flex-direction: column;
+  padding: 5px 14px;
   animation: fadein .15s ease;
 }
-.turn-user   { flex-direction: row-reverse; }
-.turn-ai     { flex-direction: row; }
-.turn-system { flex-direction: row; justify-content: center; padding: 3px 14px; }
+.turn-system { align-items: center; padding: 3px 14px; }
 
-/* ── Avatar ── */
-.role {
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 800;
-  flex-shrink: 0;
-  text-transform: uppercase;
-  letter-spacing: .3px;
-  user-select: none;
-  margin-bottom: 2px;
-}
-.role.user   { background: var(--accent);   color: #fff; }
-.role.ai     { background: #2563eb;          color: #fff; }
-.role.system { display: none; }
+/* Avatars removed for a flatter, less decorative log */
+.role { display: none; }
 
-/* ── Bubbles ── */
 .content {
-  padding: 9px 12px;
-  border-radius: 14px;
+  padding: 6px 0 6px 10px;
+  border-left: 2px solid var(--border);
   word-break: break-word;
   overflow-wrap: anywhere;
-  font-size: 12.5px;
+  font-size: 13.5px;
   line-height: 1.6;
   min-width: 0;
+  color: var(--text);
+  background: transparent;
 }
 .turn-user .content {
-  background: var(--accent);
-  color: #fff;
-  border-bottom-right-radius: 4px;
+  border-left-color: var(--accent);
 }
+/* AI content keeps its light card + report color language untouched (feeds PDF export styling) */
 .turn-ai .content {
+  border-left: none;
   background: #f8f9fa;
   color: #111111;
-  border-bottom-left-radius: 4px;
   border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  padding: 9px 12px;
 }
 .turn-system .content {
-  background: #1a1f14;
-  color: #7daf6a;
+  border-left: none;
+  background: var(--surface2);
+  color: var(--muted);
   font-size: 10.5px;
   font-family: var(--mono);
   padding: 3px 10px;
-  border: 1px solid #2e3d24;
-  border-radius: 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
   max-width: 95%;
   text-align: center;
 }
 
-/* ── Sender label above bubble ── */
+/* ── Sender label above content ── */
 .turn-label {
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .5px;
   color: var(--dim);
-  padding: 0 4px;
-  margin-bottom: 1px;
+  padding: 0 0 2px 12px;
   user-select: none;
 }
-.turn-user .turn-label  { text-align: right; color: var(--accent); }
-.turn-ai   .turn-label  { text-align: left;  color: #2563eb; }
+.turn-user .turn-label  { color: var(--accent); }
+.turn-ai   .turn-label  { color: var(--muted); }
 
-/* ── Bubble + label wrapper ── */
+/* ── Content wrapper ── */
 .bubble-col {
   display: flex;
   flex-direction: column;
-  max-width: 82%;
+  width: 100%;
+  max-width: none;
 }
-.turn-user .bubble-col { align-items: flex-end; }
-.turn-ai   .bubble-col { flex: 1; min-width: 0; max-width: none; align-items: flex-start; }
 
 .content code {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: 12px;
   background: rgba(255,255,255,.15);
   color: inherit;
   padding: 1px 5px;
@@ -835,8 +950,8 @@ body {
   overflow-x: auto;
   margin: 6px 0;
   font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.55;
   white-space: pre;
   color: var(--text);
 }
@@ -865,9 +980,9 @@ a.ext-link:hover { color: var(--accent-d); }
 .turn-ai .content h2.md-h,
 .turn-ai .content h3.md-h,
 .turn-ai .content h4.md-h { border-bottom-color: #d0d5dd; }
-.turn-ai .content h2.md-h { font-size: 13.5px; letter-spacing: .2px; color: #003366; }
-.turn-ai .content h3.md-h { font-size: 12px;   color: #003366; border-bottom: none; margin-bottom: 2px; }
-.turn-ai .content h4.md-h { font-size: 11.5px; color: #444444; border-bottom: none; font-weight: 600; }
+.turn-ai .content h2.md-h { font-size: 15px;   letter-spacing: .2px; color: #003366; }
+.turn-ai .content h3.md-h { font-size: 13.5px; color: #003366; border-bottom: none; margin-bottom: 2px; }
+.turn-ai .content h4.md-h { font-size: 13px;   color: #444444; border-bottom: none; font-weight: 600; }
 .turn-ai .content p  { margin: 3px 0; color: #111111; }
 .turn-ai .content br { display: block; margin: 4px 0; content: ''; }
 .turn-ai .content ul,
@@ -891,19 +1006,19 @@ a.ext-link:hover { color: var(--accent-d); }
   border-collapse: collapse;
   width: 100%;
   margin: 8px 0;
-  font-size: 11.5px;
+  font-size: 12.5px;
 }
 .turn-ai .content th {
   background: #003366;
   color: #ffffff;
   font-weight: 700;
   text-align: left;
-  padding: 5px 8px;
+  padding: 6px 9px;
   border: 1px solid #b0b8c4;
   white-space: nowrap;
 }
 .turn-ai .content td {
-  padding: 4px 8px;
+  padding: 5px 9px;
   border: 1px solid #d0d5dd;
   vertical-align: top;
   color: #111111;
@@ -995,41 +1110,39 @@ a.ext-link:hover { color: var(--accent-d); }
 .fg-date { color: #888; font-size: 10px; margin-left: auto; }
 
 /* ── Security report visual components ───────────────────────────────────── */
+/* Minimal, engineering-focused: a table for resource findings + a sparing inline badge. */
 
-/* Metric strip — row of KPI cards at top of report */
-.rpt-metrics {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
-  gap: 6px;
+/* Findings table — same visual language as .lql-table for consistency */
+.rpt-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
   margin: 8px 0;
-}
-.rpt-metric {
-  background: var(--surface3);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px;
-  text-align: center;
+  border-radius: 6px;
+  overflow: hidden;
 }
-.rpt-metric-value {
-  font-size: 20px;
-  font-weight: 800;
-  line-height: 1.1;
-  color: var(--text);
-}
-.rpt-metric-label {
-  font-size: 9.5px;
-  color: var(--muted);
+.rpt-table th {
+  background: var(--surface3);
+  color: var(--dim);
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .4px;
-  margin-top: 2px;
+  font-size: 9.5px;
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
 }
-.rpt-metric.critical .rpt-metric-value { color: #ee3124; }
-.rpt-metric.high     .rpt-metric-value { color: #e65c00; }
-.rpt-metric.medium   .rpt-metric-value { color: #f59e0b; }
-.rpt-metric.ok       .rpt-metric-value { color: #34d399; }
-.rpt-metric.info     .rpt-metric-value { color: #60a5fa; }
+.rpt-table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  vertical-align: top;
+}
+.rpt-table tbody tr:nth-child(even) { background: var(--surface2); }
+.rpt-table tbody tr:last-child td { border-bottom: none; }
 
-/* Severity badge */
+/* Severity badge — muted by default; colour reserved for critical/high only */
 .rpt-badge {
   display: inline-block;
   font-size: 10px;
@@ -1039,13 +1152,11 @@ a.ext-link:hover { color: var(--accent-d); }
   text-transform: uppercase;
   letter-spacing: .3px;
   vertical-align: middle;
+  border: 1px solid var(--border);
+  color: var(--muted);
 }
-.rpt-badge.critical { background: #ee3124; color: #fff; }
-.rpt-badge.high     { background: #e65c00; color: #fff; }
-.rpt-badge.medium   { background: #f59e0b; color: #000; }
-.rpt-badge.low      { background: #4caf50; color: #fff; }
-.rpt-badge.info     { background: #60a5fa; color: #000; }
-.rpt-badge.ok       { background: #34d399; color: #000; }
+.rpt-badge.critical { background: #ee3124; color: #fff; border-color: #ee3124; }
+.rpt-badge.high     { background: #e65c00; color: #fff; border-color: #e65c00; }
 
 /* Risk matrix — 5×5 heat grid */
 .rpt-matrix {
@@ -1092,98 +1203,17 @@ a.ext-link:hover { color: var(--accent-d); }
 .rpt-matrix td.cell-crit   { background: #7a1010; color: #ffaaaa; }
 .rpt-matrix td.cell-active { outline: 2px solid #fff; outline-offset: -3px; font-size: 11px; }
 
-/* Resource grid — compact card-per-resource layout */
-.rpt-resources {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin: 8px 0;
-}
-.rpt-resource {
-  background: var(--surface3);
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--dim);
-  border-radius: 6px;
-  padding: 7px 9px;
-  font-size: 11px;
-  min-width: 0;
-}
-.rpt-resource.critical { border-left-color: #ee3124; }
-.rpt-resource.high     { border-left-color: #e65c00; }
-.rpt-resource.medium   { border-left-color: #f59e0b; }
-.rpt-resource.low      { border-left-color: #4caf50; }
-.rpt-resource-name {
-  font-weight: 700;
-  font-size: 11px;
-  color: var(--text);
-  word-break: break-word;
-  margin-bottom: 3px;
-}
-.rpt-resource-meta {
-  font-size: 10px;
-  color: var(--muted);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  align-items: center;
-}
-.rpt-resource-meta .rpt-badge { font-size: 9px; padding: 1px 5px; }
-
-/* Action items — numbered priority list */
-.rpt-actions { margin: 8px 0; }
-.rpt-action {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  padding: 7px 9px;
-  margin-bottom: 5px;
-  background: var(--surface3);
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  font-size: 11px;
-}
-.rpt-action-num {
-  min-width: 20px;
-  height: 20px;
-  border-radius: 50%;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--muted);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-.rpt-action.critical .rpt-action-num { background: #ee3124; color: #fff; border-color: #ee3124; }
-.rpt-action.high     .rpt-action-num { background: #e65c00; color: #fff; border-color: #e65c00; }
-.rpt-action.medium   .rpt-action-num { background: #f59e0b; color: #000; border-color: #f59e0b; }
-.rpt-action-body { flex: 1; min-width: 0; }
-.rpt-action-title { font-weight: 700; color: var(--text); margin-bottom: 2px; }
-.rpt-action-why { color: var(--muted); font-size: 10px; margin-bottom: 3px; }
-.rpt-action-priority {
-  font-size: 9.5px;
-  font-weight: 700;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .3px;
-}
-
-/* Section wrapper with left-accent bar */
+/* Section wrapper with left-accent bar — used sparingly for a single decision line */
 .rpt-section {
   margin: 10px 0;
   padding: 8px 10px;
   background: var(--surface3);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--dim);
   border-radius: 0 8px 8px 0;
   font-size: 11.5px;
   color: var(--text);
 }
-.rpt-section.ok     { border-left-color: #34d399; }
-.rpt-section.warn   { border-left-color: #f59e0b; }
-.rpt-section.info   { border-left-color: #60a5fa; }
 
 /* Horizontal divider with label */
 .rpt-divider {
@@ -1202,6 +1232,24 @@ a.ext-link:hover { color: var(--accent-d); }
   flex: 1;
   height: 1px;
   background: var(--border);
+}
+
+/* Radar/spider chart — visual risk profile in the CVE "Critical Context" section (new, additive) */
+.rpt-radar {
+  margin: 8px 0;
+  padding: 8px 6px 4px;
+  background: #fff;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+}
+.rpt-radar-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: #555;
+  text-transform: uppercase;
+  letter-spacing: .4px;
+  text-align: center;
+  margin-bottom: 2px;
 }
 
 /* AI bubble copy btn — sits below the bubble */
@@ -1390,32 +1438,16 @@ a.ext-link:hover { color: var(--accent-d); }
 <body>
 
 <div id="config-bar">
-  <select id="gateway" title="AI Gateway">
-    <option value="bifrost">⚡ Bifrost</option>
-    <option value="portkey">Portkey</option>
-    <option value="litellm">LiteLLM</option>
-    <option value="helicone">Helicone</option>
-  </select>
   <label for="url-input" style="display:none">url</label>
   <input id="url-input" type="url" placeholder="https://bifrost.xxx" autocomplete="off" style="display:none" />
   <label id="key-label" for="key-input" style="display:none">key</label>
   <input id="key-input" type="password" placeholder="sk-bf-…" autocomplete="off" style="display:none" />
   <input id="key2-input" type="hidden" />
-  <select id="model">
-    <option value="claude-haiku-4-5" selected>haiku-4-5 ⚡</option>
-    <option value="claude-sonnet-4-6">sonnet-4-6</option>
-    <option value="claude-opus-4-8">opus-4-8</option>
-    <option value="deepseek-v4-flash">deepseek-v4-flash ⚡</option>
-    <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-  </select>
-  <span id="status">—</span>
 </div>
 
 <div id="action-bar">
-  <button id="read-page" class="chip"         title="Read current page into context"> Read</button>
-  <button id="tldr"      class="chip"         title="Summarize current page">TL;DR</button>
-  <div class="sep"></div>
-  <button id="fortiguard-feed" class="chip" title="Open FortiGuard Labs Threat Intelligence Feed">🛡 Alerts Outbreak</button>
+  <button id="read-page" class="chip"         title="Read current page into context">📖 Read</button>
+  <button id="tldr"      class="chip"         title="Summarize current page">📝 TL;DR</button>
   <div class="sep"></div>
   <div id="fcnapp-wrap">
     <button id="fcnapp-btn" class="chip accent" title="FortiCNAPP tools"> FortiCNAPP <span class="caret">▼</span></button>
@@ -1425,9 +1457,37 @@ a.ext-link:hover { color: var(--accent-d); }
       <button id="compliance" class="fcnapp-item success" title="Generate compliance PDF report"> Compliance Report</button>
       <button id="lql"        class="fcnapp-item accent"  title="Run LQL queries against your tenant"> Advanced Analytics</button>
       <button id="cve-btn"    class="fcnapp-item danger"  title="CVE attack surface across hosts &amp; containers"> Enriched Attack Threat Surface</button>
-      <button id="fcnapp-community" class="fcnapp-item" title="FortiCNAPP Community — blogs &amp; articles">💬 Community Feed</button>
     </div>
   </div>
+  <button id="faz-btn" class="chip lw-disabled" title="FortiAnalyzer — coming soon. Correlated SOC analytics across the Security Fabric.">📈 FAZ</button>
+  <button id="forticasb-btn" class="chip lw-disabled" title="FortiCASB-SSPM — coming soon. SaaS security posture: Shadow IT discovery, OAuth app risk, M365/GWS/Salesforce posture.">☁️ FortiCASB-SSPM</button>
+  <div class="sep"></div>
+  <div id="admin-wrap">
+    <button id="admin-btn" class="chip" title="Gateway, model, TokenIQ, community"><span id="routing-dot" class="admin-dot"></span> Admin <span class="caret">▼</span></button>
+    <div id="admin-menu">
+      <div class="admin-menu-label">AI Gateway</div>
+      <select id="gateway" class="admin-select" title="AI Gateway">
+        <option value="bifrost">⚡ Bifrost</option>
+        <option value="portkey">Portkey</option>
+        <option value="litellm">LiteLLM</option>
+        <option value="helicone">Helicone</option>
+      </select>
+      <div class="admin-menu-label">LLM Model</div>
+      <select id="model" class="admin-select">
+        <option value="claude-haiku-4-5" selected>haiku-4-5 ⚡</option>
+        <option value="claude-sonnet-4-6">sonnet-4-6</option>
+        <option value="claude-opus-4-8">opus-4-8</option>
+        <option value="deepseek-v4-flash">deepseek-v4-flash ⚡</option>
+        <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+      </select>
+      <div class="fcnapp-sep"></div>
+      <span id="routing-badge" class="admin-item headroom-badge" style="display:none"></span>
+      <button id="dashboard-token" class="fcnapp-item admin-item" title="Open TokenIQ token-savings dashboard">📊 TokenIQ Dashboard</button>
+      <div class="fcnapp-sep"></div>
+      <button id="fcnapp-community" class="fcnapp-item admin-item" title="FortiCNAPP Community — blogs &amp; articles">💬 Community Feed</button>
+    </div>
+  </div>
+  <span id="status">—</span>
   <button id="clear"      class="chip">✕ Clear</button>
 </div>
 
@@ -1496,6 +1556,9 @@ a.ext-link:hover { color: var(--accent-d); }
              autocomplete="off" style="flex:1;min-width:160px" />
       <button id="lql-gen-btn" class="drawer-btn primary">▶ Run Query</button>
       <span id="lql-gen-status" class="drawer-status"></span>
+      <span id="lql-gen-dog" class="lql-dog" title="Working hard…">🐕</span>
+      <span id="lql-gen-runner" class="lql-runner" title="Cleanup crew">🏃</span>
+      <div id="lql-gen-poop-trail"></div>
     </div>
     <div id="lql-gen-results"></div>
   </div>

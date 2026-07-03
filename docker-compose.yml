@@ -12,7 +12,46 @@ services:
     volumes:
       - ~/.lacework.toml:/root/.lacework.toml:ro
       - ~/claude_cnapp/lql/lql_queries:/lql_queries:ro
+      - ./.env:/app/.env
     restart: unless-stopped
+
+  # Optional token-compression proxy (https://github.com/chopratejas/headroom) — deliberately NOT
+  # a dependency of webai above, so `docker compose up -d webai` keeps working standalone for
+  # anyone who hasn't opted in. Start it explicitly with `docker compose up -d headroom` (or
+  # `docker compose up -d` to bring up everything), then flip HEADROOM_ENABLED from the
+  # extension's routing badge. webai reaches it
+  # at http://headroom:8787 (HEADROOM_URL in .env); the dashboard is published to the host at
+  # 127.0.0.1:8787 (HEADROOM_DASHBOARD_URL) since that link is opened directly by the browser.
+  # --compress-user-messages: this app sends single-turn user messages with embedded JSON, not a
+  #   multi-turn agent tool loop — Headroom skips compressing user-role content by default.
+  # --no-ccr-inject-tool: Headroom's CCR reversible-compression tool-injection buffers streaming
+  #   responses to resolve retrieval calls server-side, and its buffered-to-SSE reconstruction
+  #   can't handle Anthropic's server_tool_use blocks (what web_search_20260209 produces) — this
+  #   app declares that tool on every request, so leaving CCR injection on causes 502s whenever
+  #   the model actually searches the web. This flag disables only the tool injection, not the
+  #   underlying compression.
+  headroom:
+    image: ghcr.io/chopratejas/headroom:latest
+    container_name: headroom-proxy
+    ports:
+      - "8787:8787"
+    environment:
+      - HEADROOM_COMPRESS_USER_MESSAGES=1
+      - HEADROOM_NO_CCR_INJECT_TOOL=1
+    command: ["--host", "0.0.0.0", "--port", "8787", "--anthropic-api-url", "${ANTHROPIC_BASE_URL}"]
+    volumes:
+      # Lifetime savings/cache state — without this, tokens_saved resets to 0 on every recreate.
+      - headroom-state:/root/.headroom
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8787/livez', timeout=3).status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  headroom-state:
 
 secrets:
   lacework_toml:

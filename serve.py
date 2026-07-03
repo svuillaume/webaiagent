@@ -9,70 +9,26 @@ GET  /config        → gateway URL, key, lw_ready flag
 POST /proxy/v1/*    → proxy to AI gateway upstream
 POST /codesec       → lacework SCA+SAST on submitted code
 POST /sbom          → CycloneDX SBOM via lacework SCA
-POST /compliance    → compliance PDF; cached at /compliance/latest-text
+POST /compliance    → compliance PDF
 GET  /compliance/list → available frameworks
 GET  /lql/queries   → list .yaml files from LQL_QUERIES_DIR
 POST /lql/run       → execute LQL against FortiCNAPP
 POST /lql/cve       → CVE attack surface: hosts + containers
 POST /lql/generate  → plain-English → LQL via Claude
+GET  /headroom/stats  → lifetime token savings from a local Headroom proxy (HEADROOM_URL)
+POST /headroom/toggle → switch chat requests between direct-to-gateway and via-Headroom
+POST /model           → persist the extension's model picker as ANTHROPIC_DEFAULT_MODEL
 
 Usage: python3 serve.py  →  http://localhost:45321
 """
-import base64, http.server, io, json, os, re, shutil, socketserver, struct, subprocess, tempfile, urllib.parse, urllib.request, urllib.error, zlib
+import base64, http.server, io, json, os, re, shutil, socketserver, struct, subprocess, tempfile, threading, urllib.parse, urllib.request, urllib.error
 from datetime import datetime, timezone, timedelta
 
 PORT      = 45321
 DIR       = os.path.dirname(os.path.abspath(__file__))
 
-_last_compliance_pdf: dict = {}
 HTML_FILE = os.path.join(DIR, 'chatbox.html')
 
-
-def _pdf_extract_text(pdf_bytes: bytes) -> str:
-    """Pure-Python PDF text extractor. Handles FlateDecode compressed streams.
-    Covers the vast majority of Lacework/FortiCNAPP compliance PDFs."""
-    chunks = []
-
-    # Find all stream … endstream blocks
-    for m in re.finditer(rb'stream\r?\n(.*?)\r?\nendstream', pdf_bytes, re.DOTALL):
-        raw = m.group(1)
-
-        # Try zlib decompress (FlateDecode) first; fall back to raw bytes
-        for data in _try_decompress(raw):
-            try:
-                text = data.decode('latin-1', errors='replace')
-            except Exception:
-                continue
-
-            # Extract text from PDF content operators: (str)Tj and [(str)]TJ
-            for tj in re.findall(r'\(([^)]{1,500})\)\s*Tj', text):
-                chunks.append(_pdf_unescape(tj))
-            for tj_arr in re.findall(r'\[([^\]]{1,2000})\]\s*TJ', text):
-                parts = re.findall(r'\(([^)]{1,300})\)', tj_arr)
-                if parts:
-                    chunks.append(_pdf_unescape(''.join(parts)))
-
-    # Join, collapse whitespace runs, return
-    result = '\n'.join(s for s in chunks if s.strip())
-    return re.sub(r'\n{3,}', '\n\n', result)
-
-
-def _try_decompress(data: bytes):
-    """Yield the decompressed data if zlib/deflate works, then the raw bytes."""
-    for wbits in (15, -15, 47):   # zlib, raw deflate, gzip
-        try:
-            yield zlib.decompress(data, wbits)
-            return
-        except Exception:
-            pass
-    yield data   # uncompressed stream
-
-
-def _pdf_unescape(s: str) -> str:
-    """Unescape PDF string escape sequences."""
-    return (s.replace('\\n', '\n').replace('\\r', '')
-             .replace('\\t', ' ').replace('\\(', '(')
-             .replace('\\)', ')').replace('\\\\', '\\'))
 
 def load_env():
     env = dict(os.environ)  # start with real env vars (Docker, systemd, etc.)
@@ -88,14 +44,141 @@ def load_env():
 
 env             = load_env()
 VIRTUAL_KEY     = env.get('BIFROST_VIRTUAL_KEY', '')
-UPSTREAM        = env.get('ANTHROPIC_BASE_URL', 'https://your-gateway-endpoint/anthropic')
+DIRECT_UPSTREAM = env.get('ANTHROPIC_BASE_URL', 'https://your-gateway-endpoint/anthropic')
 MODEL           = env.get('ANTHROPIC_DEFAULT_MODEL', 'claude-haiku-4-5')
 LQL_QUERIES_DIR = env.get('LQL_QUERIES_DIR', '')
+HEADROOM_URL    = env.get('HEADROOM_URL', '').rstrip('/')  # optional local Headroom proxy, e.g. http://host.docker.internal:8789
+# Browser-facing address for the dashboard link and for the extension's own direct fetch — differs
+# from HEADROOM_URL when serve.py runs in Docker (host.docker.internal resolves inside the
+# container, not in the host's Chrome browser, which is what caused the "Failed to fetch" bug).
+HEADROOM_DASHBOARD_URL = env.get('HEADROOM_DASHBOARD_URL', '').rstrip('/') or HEADROOM_URL
+
+# ── Headroom routing toggle ──────────────────────────────────────────────────
+# In-memory switch (source of truth while the process runs) + persisted to .env so it survives
+# a restart. Never overwrites ANTHROPIC_BASE_URL itself — DIRECT_UPSTREAM always stays the real
+# gateway, so toggling back to "direct" can never lose it.
+_state_lock = threading.Lock()
+_state = {'headroom_enabled': env.get('HEADROOM_ENABLED', '0').strip().lower() in ('1', 'true', 'yes', 'on')}
+
+def _headroom_enabled() -> bool:
+    with _state_lock:
+        return _state['headroom_enabled'] and bool(HEADROOM_URL)
+
+def current_upstream() -> str:
+    """Server-side outbound target — used by proxy_upstream() (chatbox.html's path)."""
+    return HEADROOM_URL if _headroom_enabled() else DIRECT_UPSTREAM
+
+def current_browser_gateway_url() -> str:
+    """Browser-reachable target — used for /config's gateway_url (the extension fetches this
+    directly from the browser). When routing through Headroom this points at serve.py's own
+    /proxy passthrough rather than Headroom directly: Headroom's CORS allowlist rejects
+    chrome-extension:// origins and the x-api-key/anthropic-version headers outright (400
+    "Disallowed CORS origin, headers"), so a direct browser→Headroom fetch always fails —
+    going through /proxy sidesteps CORS entirely since it's a server-side call, same as
+    chatbox.html already does successfully."""
+    if _headroom_enabled():
+        return f'http://localhost:{PORT}/proxy'
+    return DIRECT_UPSTREAM
+
+def _write_env_var(key: str, value: str) -> None:
+    """Update (or add) a single KEY=value line in .env, preserving everything else."""
+    path = os.path.join(DIR, '.env')
+    lines = []
+    if os.path.exists(path):
+        with open(path) as f:
+            lines = f.readlines()
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped and not stripped.startswith('#') and stripped.split('=', 1)[0].strip() == key:
+            lines[i] = f'{key}={value}\n'
+            found = True
+            break
+    if not found:
+        if lines and not lines[-1].endswith('\n'):
+            lines[-1] += '\n'
+        lines.append(f'{key}={value}\n')
+    with open(path, 'w') as f:
+        f.writelines(lines)
+
+# ── LQL reference doc retrieval (RAG-lite, LQL generation only) ─────────────
+# serve.py must stay pure stdlib, so this is keyword-overlap retrieval over pre-split datasource
+# chunks — not embeddings. Good enough to ground LQL generation in real field names instead of
+# relying solely on hand-curated hints, without dumping the whole ~530KB doc into every prompt.
+_LQL_REFERENCE_PATH = os.path.join(DIR, 'FortiCNAPP-LQL_Reference_Guide.txt')
+_lql_reference_chunks = None  # lazy-loaded cache: list of (datasource_name, chunk_text)
+
+def _load_lql_reference_chunks():
+    global _lql_reference_chunks
+    if _lql_reference_chunks is not None:
+        return _lql_reference_chunks
+    _lql_reference_chunks = []
+    if not os.path.exists(_LQL_REFERENCE_PATH):
+        return _lql_reference_chunks
+    with open(_LQL_REFERENCE_PATH, encoding='utf-8', errors='ignore') as f:
+        lines = f.readlines()
+
+    # Strip repeating page header/footer noise interspersed mid-section
+    noise_re = re.compile(r'^(FortiCNAPP [\d.]+ LQL Reference Guide|Fortinet Inc\.|Datasource Metadata)\s*\d*\s*$')
+    lines = [l for l in lines if not noise_re.match(l.strip())]
+
+    # Datasource section headers are standalone identifier lines at column 0 (LW_HE_MACHINES,
+    # CloudTrailRawEvents, ...) — must NOT strip before matching, or indented in-example mentions
+    # (e.g. "LW_HA_FILE_CHANGES" inside a JOIN-syntax code sample) are misdetected as new sections.
+    header_re = re.compile(r'^(LW_[A-Z0-9_]+|CloudTrail\w+)\n?$')
+    header_idx = [i for i, l in enumerate(lines) if header_re.match(l)]
+    for n, idx in enumerate(header_idx):
+        name = lines[idx].strip()
+        end  = header_idx[n + 1] if n + 1 < len(header_idx) else len(lines)
+        body = ''.join(lines[idx:end]).strip()
+        if len(body) > 40:  # skip stray false-positive header matches with no real content
+            _lql_reference_chunks.append((name, body))
+    return _lql_reference_chunks
+
+_LQL_RETRIEVAL_STOPWORDS = {
+    'the', 'a', 'an', 'of', 'in', 'on', 'for', 'with', 'and', 'or', 'to', 'is', 'are', 'that',
+    'this', 'find', 'list', 'show', 'get', 'all', 'any', 'has', 'have', 'not', 'without',
+}
+
+_LQL_RETRIEVAL_MIN_SCORE = 5.0  # below this, treat as no real match (avoids injecting noise for
+                                 # objectives about datasources this doc doesn't catalog per-section,
+                                 # e.g. LW_CFG_* AWS resource types — a raw name match alone clears this)
+
+def _retrieve_lql_reference(objective: str, max_chunks: int = 3, max_chars: int = 5000) -> str:
+    """Keyword-overlap ranked excerpts from the LQL reference doc relevant to this objective.
+    Score = heavily-weighted name match + length-normalized keyword density in the body — raw counts
+    alone would let the two unbounded end-of-file chunks (CloudTrailRawEvents, LW_ACT_GCP_ACTIVITY —
+    both huge, no next-header boundary to cap them) win almost every query purely by sheer volume."""
+    chunks = _load_lql_reference_chunks()
+    if not chunks:
+        return ''
+    words = [w for w in re.findall(r'[a-z0-9]+', objective.lower())
+             if w not in _LQL_RETRIEVAL_STOPWORDS and len(w) > 2]
+    if not words:
+        return ''
+    scored = []
+    for name, body in chunks:
+        name_l, body_l = name.lower(), body.lower()
+        name_score = sum(name_l.count(w) for w in words) * 25
+        density    = sum(body_l.count(w) for w in words) / (len(body_l) / 1000.0)
+        score = name_score + density
+        if score >= _LQL_RETRIEVAL_MIN_SCORE:
+            scored.append((score, name, body))
+    scored.sort(key=lambda x: -x[0])
+
+    out, budget = [], max_chars
+    for _, name, body in scored[:max_chunks]:
+        snippet = body[:2000]
+        if len(snippet) > budget:
+            break
+        out.append(snippet)
+        budget -= len(snippet)
+    return '\n\n---\n\n'.join(out)
 
 CORS = {
     'Access-Control-Allow-Origin':  '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, x-api-key, anthropic-version',
+    'Access-Control-Allow-Headers': 'Content-Type, x-api-key, anthropic-version, Authorization, x-portkey-api-key, helicone-auth',
 }
 
 _lql_cache: dict = {}
@@ -113,7 +196,7 @@ def _fg_outbreaks_cached():
     try:
         req = urllib.request.Request(
             'https://www.fortiguard.com/rss/outbreakalert.xml',
-            headers={'User-Agent': 'Mozilla/5.0 WebAIAgent/1.0'},
+            headers={'User-Agent': 'Mozilla/5.0 FortiAIScout/1.0'},
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             xml_bytes = r.read()
@@ -165,7 +248,7 @@ def _fetch_cve_intel(cve: str) -> dict:
 
     def _get_json(url, headers=None, timeout=8):
         try:
-            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'WebAIAgent/1.0'})
+            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'FortiAIScout/1.0'})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read())
         except Exception:
@@ -204,7 +287,7 @@ def _fetch_cve_intel(cve: str) -> dict:
     # NVD CVSS
     nvd_data = _get_json(
         f'https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}',
-        headers={'User-Agent': 'WebAIAgent/1.0', 'Accept': 'application/json'},
+        headers={'User-Agent': 'FortiAIScout/1.0', 'Accept': 'application/json'},
         timeout=10,
     )
     if nvd_data and nvd_data.get('vulnerabilities'):
@@ -265,7 +348,7 @@ def _scrape_fg_outbreak(slug: str) -> dict:
     """Scrape a FortiGuard outbreak-alert page and return structured signals."""
     url = f'https://fortiguard.fortinet.com/outbreak-alert/{slug}'
     try:
-        req  = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 WebAIAgent/1.0'})
+        req  = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 FortiAIScout/1.0'})
         with urllib.request.urlopen(req, timeout=12) as r:
             html = r.read().decode('utf-8', errors='replace')
     except Exception:
@@ -359,8 +442,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_config()
         elif self.path == '/compliance/list':
             self.serve_compliance_list()
-        elif self.path == '/compliance/latest-text':
-            self.serve_compliance_text()
         elif self.path == '/lql/queries':
             self.serve_lql_queries()
         elif self.path == '/fortiguard/outbreaks':
@@ -371,6 +452,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_outbreak_detail()
         elif self.path.startswith('/fortiguard/cve-intel'):
             self.serve_cve_intel()
+        elif self.path == '/headroom/stats':
+            self.serve_headroom_stats()
         else:
             self.send_error(404)
 
@@ -389,6 +472,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_lql_generate()
         elif self.path.startswith('/proxy/'):
             self.proxy_upstream()
+        elif self.path == '/headroom/toggle':
+            self.serve_headroom_toggle()
+        elif self.path == '/model':
+            self.serve_model_update()
         else:
             self.send_error(404)
 
@@ -411,16 +498,62 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     def serve_config(self):
         body = json.dumps({
-            'gateway_url': env.get('ANTHROPIC_BASE_URL', ''),
-            'api_key':     VIRTUAL_KEY,
-            'lw_ready':    LW_READY,
-            'lw_cli':      LW_AVAILABLE,
-            'user_name':   _user_first_name(),
+            # Browser-reachable — the extension fetches this directly, so it must never be a
+            # Docker-internal hostname (see current_browser_gateway_url()'s docstring).
+            'gateway_url':   current_browser_gateway_url(),
+            'api_key':       VIRTUAL_KEY,
+            'lw_ready':      LW_READY,
+            'lw_cli':        LW_AVAILABLE,
+            'user_name':     _user_first_name(),
+            'via_headroom':  _headroom_enabled(),
+            'headroom_configured': bool(HEADROOM_URL),
         }).encode()
         self.send_json(200, body)
 
+    def serve_headroom_toggle(self):
+        try:
+            payload = json.loads(self._read_body() or '{}')
+        except json.JSONDecodeError:
+            payload = {}
+        enable = payload.get('enable')
+        if not isinstance(enable, bool):
+            self.send_json(400, json.dumps({'error': 'body must be {"enable": true|false}'}).encode())
+            return
+        if enable and not HEADROOM_URL:
+            self.send_json(400, json.dumps({'error': 'HEADROOM_URL is not set in .env'}).encode())
+            return
+        with _state_lock:
+            _state['headroom_enabled'] = enable
+        try:
+            _write_env_var('HEADROOM_ENABLED', '1' if enable else '0')
+        except OSError:
+            pass  # in-memory toggle still applies even if the .env write fails (e.g. read-only mount)
+        self.send_json(200, json.dumps({
+            'via_headroom': _headroom_enabled(),
+            'gateway_url':  current_browser_gateway_url(),
+        }).encode())
+
+    def serve_model_update(self):
+        """Persist the model picked in the extension's dropdown as ANTHROPIC_DEFAULT_MODEL,
+        so server-side calls (/lql/generate) use the same model the user is chatting with."""
+        global MODEL
+        try:
+            payload = json.loads(self._read_body() or '{}')
+        except json.JSONDecodeError:
+            payload = {}
+        model = (payload.get('model') or '').strip()
+        if not model:
+            self.send_json(400, json.dumps({'error': 'body must be {"model": "..."}'}).encode())
+            return
+        MODEL = model
+        try:
+            _write_env_var('ANTHROPIC_DEFAULT_MODEL', model)
+        except OSError:
+            pass  # in-memory update still applies even if the .env write fails (e.g. read-only mount)
+        self.send_json(200, json.dumps({'model': MODEL}).encode())
+
     def proxy_upstream(self):
-        url    = UPSTREAM + self.path[len('/proxy'):]
+        url    = current_upstream() + self.path[len('/proxy'):]
         length = int(self.headers.get('Content-Length', 0))
         body   = self.rfile.read(length)
         req    = urllib.request.Request(url, data=body, method='POST', headers={
@@ -1078,8 +1211,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             resp2    = urllib.request.urlopen(req2, timeout=120)
             pdf_bytes = resp2.read()
             safe_name = fw_name.replace('/', '-').replace(' ', '_')[:60]
-            _last_compliance_pdf['name']  = fw_name
-            _last_compliance_pdf['bytes'] = pdf_bytes
             self.send_pdf(pdf_bytes, f'compliance-{safe_name}.pdf')
 
         except urllib.error.HTTPError as e:
@@ -1099,30 +1230,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         timeout=10)
                 except Exception:
                     pass
-
-    def serve_compliance_text(self):
-        if not _last_compliance_pdf.get('bytes'):
-            self.send_json(404, json.dumps({'error': 'No compliance PDF generated yet'}).encode())
-            return
-        pdf_bytes = _last_compliance_pdf['bytes']
-        fw_name   = _last_compliance_pdf.get('name', 'Compliance Report')
-        # Prefer pdftotext for highest-quality extraction; fall back to pure-Python
-        if shutil.which('pdftotext'):
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as f:
-                f.write(pdf_bytes)
-                tmppath = f.name
-            try:
-                result = subprocess.run(
-                    ['pdftotext', '-layout', tmppath, '-'],
-                    capture_output=True, timeout=30)
-                text = result.stdout.decode('utf-8', errors='replace')
-                self.send_json(200, json.dumps({'name': fw_name, 'text': text}).encode())
-                return
-            finally:
-                os.unlink(tmppath)
-        # Pure-Python fallback: decompress FlateDecode streams then extract Tj/TJ text
-        text = _pdf_extract_text(pdf_bytes)
-        self.send_json(200, json.dumps({'name': fw_name, 'text': text or None}).encode())
 
     def serve_lql_cve(self):
         try:
@@ -1204,7 +1311,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     'hostname':         tags.get('Hostname') or ctx.get('hostname') or mid,
                     'account':          tags.get('Account') or tags.get('account') or '',
                     'region':           tags.get('Region') or tags.get('region') or '',
-                    'host_exposed':     str(tags.get('lw_InternetExposure', '')).lower() == 'yes',
+                    # lw_InternetExposure is often unpopulated — fall back to "has a public IP"
+                    'host_exposed':     (str(tags.get('lw_InternetExposure', '')).lower() == 'yes'
+                                          or bool(tags.get('ExternalIp'))),
                     'host_risk_score':  float(v.get('hostRiskScore') or 0),
                     'cve_risk_score':   float(v.get('cveRiskScore') or 0),
                     'severity':         v.get('severity', ''),
@@ -1361,6 +1470,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         result = _fetch_cve_intel(cve)
         self.send_json(200, json.dumps(result).encode())
 
+    def serve_headroom_stats(self):
+        """Proxy Headroom's lifetime savings — keeps the extension's CSP from needing
+        a direct route to the Headroom proxy, same pattern as the FortiGuard routes above."""
+        if not HEADROOM_URL:
+            self.send_json(200, json.dumps({'available': False}).encode())
+            return
+        try:
+            req = urllib.request.Request(f'{HEADROOM_URL}/stats-history',
+                                          headers={'User-Agent': 'FortiAIScout/1.0'})
+            with urllib.request.urlopen(req, timeout=4) as r:
+                data = json.loads(r.read())
+            lifetime      = data.get('lifetime', {})
+            tokens_saved  = lifetime.get('tokens_saved', 0)
+            # total_input_tokens is what was actually SENT (post-compression), so the original
+            # pre-compression total is tokens_saved + total_input_tokens.
+            tokens_after  = lifetime.get('total_input_tokens', 0)
+            tokens_before = tokens_saved + tokens_after
+            savings_pct   = round((tokens_saved / tokens_before) * 100, 1) if tokens_before else 0.0
+            self.send_json(200, json.dumps({
+                'available':      True,
+                'dashboard_url':  f'{HEADROOM_DASHBOARD_URL}/dashboard',
+                'tokens_saved':   tokens_saved,
+                'requests':       lifetime.get('requests', 0),
+                'savings_percent': savings_pct,
+            }).encode())
+        except Exception:
+            self.send_json(200, json.dumps({'available': False}).encode())
+
     def serve_lql_generate(self):
         try:
             payload = json.loads(self._read_body())
@@ -1381,7 +1518,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(200, json.dumps(cached).encode())
             return
 
-        if not UPSTREAM or not VIRTUAL_KEY:
+        if not DIRECT_UPSTREAM or not VIRTUAL_KEY:
             self.send_json(503, json.dumps({'error': 'Gateway URL or virtual key not configured'}).encode())
             return
 
@@ -1500,7 +1637,8 @@ Identity & Access:
 
 Compute — EC2:
   LW_CFG_AWS_EC2_INSTANCES                    — EC2 instances; RESOURCE_CONFIG:State.Name::String = 'running'
-  LW_CFG_AWS_EC2_SECURITY_GROUPS              — security groups; RESOURCE_CONFIG:IpPermissions and IpPermissionsEgress contain arrays of rules — DO NOT use [*] to query them; use array_to_rows()
+  LW_CFG_AWS_EC2_SECURITY_GROUPS               — security groups; RESOURCE_CONFIG:IpPermissions and IpPermissionsEgress contain arrays of rules — DO NOT use [*] to query them; use array_to_rows()
+                                                For "0.0.0.0/0 open to the internet", array_to_rows() TWICE — once for IpPermissions, once for the nested IpRanges array — then filter on the inner alias's CidrIp. See example below; this is the reliable way to find internet exposure, NOT LW_HE_MACHINES tags (see note below).
   LW_CFG_AWS_EC2_VPCS                         — VPCs
   LW_CFG_AWS_EC2_SUBNETS                      — subnets
   LW_CFG_AWS_EC2_VOLUMES                      — EBS volumes; RESOURCE_CONFIG:Encrypted = 'true'/'false', RESOURCE_CONFIG:State::String, RESOURCE_CONFIG:VolumeType::String
@@ -1574,8 +1712,20 @@ No ARN/SERVICE/RESOURCE_TYPE — use MID to join to LW_HE_MACHINES for hostname/
 Standard return: MID, HOSTNAME (via join or TAGS:Hostname::String), plus relevant fields.
 
   LW_HE_MACHINES      — host inventory: MID, HOSTNAME, TAGS(JSON), OS, OS_VERSION, KERNEL_RELEASE
-                        TAGS:lw_InternetExposure::String = 'Yes'  → internet-exposed host
-                        TAGS:Account::String, TAGS:Region::String, TAGS:Hostname::String
+                        TAGS:Account::String, TAGS:Zone::String, TAGS:Hostname::String
+                        CAUTION: there is NO "Region" tag — verified empty against real tenant data. AWS hosts only
+                        carry TAGS:Zone::String, the availability zone (e.g. "ca-central-1a"), not a bare region.
+                        For "hosts in region/country X", filter TAGS:Zone::String LIKE '<region-prefix>-%'
+                        (e.g. 'ca-%' for Canada, 'eu-%' for Europe) — do NOT filter on TAGS:Region, it will silently
+                        match zero rows every time.
+                        TAGS:ExternalIp::String — public IP if assigned. CAUTION: hosts with no public IP have this
+                        tag present but set to an EMPTY STRING, not absent/null — "IS NOT NULL" alone always passes.
+                        Always filter BOTH: TAGS:ExternalIp IS NOT NULL AND TAGS:ExternalIp != ''.
+                        CAUTION: TAGS:lw_InternetExposure is often unpopulated (empty on every host in many tenants) —
+                        it is NOT a reliable signal. Do NOT use it as the sole filter for "internet exposed" objectives.
+                        For TRUE internet exposure (reachable, not just has-a-public-IP), use the security-group
+                        0.0.0.0/0 check on LW_CFG_AWS_EC2_SECURITY_GROUPS instead (see example below) — it reflects
+                        actual reachability, not an optional agent-computed tag.
 
   LW_HE_PROCESSES     — running process snapshot: MID, PID, PPID, USERNAME, EXE_PATH, CMDLINE, CWD
   LW_HE_ALL_PROCESSES — all processes incl. short-lived: MID, PID, PPID, EXE_PATH, CMDLINE, IS_IN_CONTAINER, CONTAINER_ID
@@ -1616,11 +1766,19 @@ IAM users with password login but no MFA:
 KMS customer-managed keys without rotation (join describe_key to filter to CUSTOMER keys only):
 {"queryId":"Custom_AWS_KMS_CustomerKeyRotationDisabled","queryText":"{ source { LW_CFG_AWS_KMS_KEYS keys with( LW_CFG_AWS_KMS_KEYS_DESCRIBE_KEY key, LW_CFG_AWS_KMS_KEYS_GET_ROTATION_STATUS rotation ) } filter { key.RESOURCE_CONFIG:KeyMetadata.Enabled = 'true' and key.RESOURCE_CONFIG:KeyMetadata.KeyManager = 'CUSTOMER' and key.RESOURCE_CONFIG:KeyMetadata.KeySpec = 'SYMMETRIC_DEFAULT' and rotation.RESOURCE_CONFIG:KeyRotationEnabled = 'false' } return distinct { key.ACCOUNT_ALIAS, key.ACCOUNT_ID, key.ARN as RESOURCE_KEY, key.RESOURCE_REGION, key.RESOURCE_TYPE, key.SERVICE, 'KMS customer key rotation not enabled' as COMPLIANCE_FAILURE_REASON } }"}
 
-Internet-exposed hosts:
-{"queryId":"Custom_AWS_Hosts_InternetExposed","queryText":"{ source { LW_HE_MACHINES } filter { TAGS:lw_InternetExposure::String = 'Yes' } return distinct { MID, TAGS:Hostname::String as HOSTNAME, TAGS:Account::String as ACCOUNT, TAGS:Region::String as REGION, OS } }"}
+Security groups open to the internet (0.0.0.0/0 ingress) — TRUE exposure via actual reachability, not an agent tag.
+Requires array_to_rows() TWICE: once for IpPermissions, once for the nested IpRanges array:
+{"queryId":"Custom_AWS_EC2_SecurityGroupOpenToInternet","queryText":"{ source { LW_CFG_AWS_EC2_SECURITY_GROUPS a, array_to_rows(a.RESOURCE_CONFIG:IpPermissions) as (ip_permissions), array_to_rows(ip_permissions:IpRanges) as (ip_range) } filter { ip_range:CidrIp = '0.0.0.0/0' } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, RESOURCE_CONFIG:GroupName::String as GROUP_NAME, ip_permissions:FromPort::String as FROM_PORT, ip_permissions:ToPort::String as TO_PORT } }"}
+
+Hosts with a public IP assigned (has-a-public-IP signal, not full reachability analysis):
+{"queryId":"Custom_AWS_Hosts_WithPublicIP","queryText":"{ source { LW_HE_MACHINES } filter { TAGS:ExternalIp IS NOT NULL AND TAGS:ExternalIp != '' } return distinct { MID, TAGS:Hostname::String as HOSTNAME, TAGS:ExternalIp::String as EXTERNAL_IP, TAGS:Account::String as ACCOUNT, TAGS:Zone::String as ZONE } }"}
+
+EC2 hosts in a specific region/country with a public IP (e.g. "EC2 in Canada with internet exposure") — filter on
+Zone, not the nonexistent Region tag, and check both null AND empty-string on ExternalIp:
+{"queryId":"Custom_AWS_Hosts_WithPublicIP_ByRegion","queryText":"{ source { LW_HE_MACHINES } filter { TAGS:Zone::String LIKE 'ca-%' AND TAGS:ExternalIp IS NOT NULL AND TAGS:ExternalIp != '' } return distinct { MID, TAGS:Hostname::String as HOSTNAME, TAGS:ExternalIp::String as EXTERNAL_IP, TAGS:Account::String as ACCOUNT, TAGS:Zone::String as ZONE } }"}
 
 SSH logins from external IPs on internet-exposed hosts (multi-source join):
-{"queryId":"Custom_AWS_Hosts_ExternalSSHLogins","queryText":"{ source { LW_HA_SSH_LOGINS s WITH LW_HE_MACHINES m } filter { m.TAGS:lw_InternetExposure::String = 'Yes' AND s.IP_ADDR NOT LIKE '10.%' AND s.IP_ADDR NOT LIKE '192.168.%' } return distinct { s.MID, m.TAGS:Hostname::String as HOSTNAME, s.USERNAME, s.IP_ADDR, s.LOGIN_TIME, m.TAGS:Account::String as ACCOUNT } }"}
+{"queryId":"Custom_AWS_Hosts_ExternalSSHLogins","queryText":"{ source { LW_HA_SSH_LOGINS s WITH LW_HE_MACHINES m } filter { m.TAGS:ExternalIp IS NOT NULL AND m.TAGS:ExternalIp != '' AND s.IP_ADDR NOT LIKE '10.%' AND s.IP_ADDR NOT LIKE '192.168.%' } return distinct { s.MID, m.TAGS:Hostname::String as HOSTNAME, s.USERNAME, s.IP_ADDR, s.LOGIN_TIME, m.TAGS:Account::String as ACCOUNT } }"}
 
 List all Secrets Manager secrets:
 {"queryId":"Custom_AWS_SecretsManager_AllSecrets","queryText":"{ source { LW_CFG_AWS_SECRETSMANAGER_SECRETS } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, RESOURCE_CONFIG:Name::String as SECRET_NAME, RESOURCE_CONFIG:RotationEnabled::String as ROTATION_ENABLED, RESOURCE_CONFIG:LastRotatedDate::String as LAST_ROTATED_DATE } }"}
@@ -1686,6 +1844,13 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
         if _schema_hints:
             system_prompt += f'\n\n━━ LIVE TENANT CONTEXT ━━\n{_schema_hints}'
 
+        _reference_excerpts = _retrieve_lql_reference(objective)
+        if _reference_excerpts:
+            system_prompt += (
+                '\n\n━━ LQL REFERENCE DOC EXCERPTS (authoritative — prefer these exact field names '
+                f'over any conflicting guidance above) ━━\n{_reference_excerpts}'
+            )
+
         # Embed system as first user message — works for Anthropic and OpenAI-compatible gateways
         messages = [
             {'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'},
@@ -1693,7 +1858,7 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
         def _call_claude(msgs):
             body = json.dumps({'model': MODEL or 'claude-haiku-4-5', 'max_tokens': 2048, 'messages': msgs}).encode()
             r = urllib.request.Request(
-                UPSTREAM.rstrip('/') + '/v1/messages', data=body, method='POST',
+                current_upstream().rstrip('/') + '/v1/messages', data=body, method='POST',
                 headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY, 'anthropic-version': '2023-06-01'})
             resp = urllib.request.urlopen(r, timeout=60)
             resp_data = json.loads(resp.read())
@@ -1922,8 +2087,10 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
         except Exception as e:
             msg = str(e)
             if 'Name or service not known' in msg or 'urlopen error' in msg:
-                msg = (f'Cannot reach AI gateway ({UPSTREAM}). '
-                       'Check that ANTHROPIC_BASE_URL in .env points to your real gateway and restart the server.')
+                target = current_upstream()
+                hint = 'HEADROOM_URL' if _headroom_enabled() else 'ANTHROPIC_BASE_URL'
+                msg = (f'Cannot reach AI gateway ({target}). '
+                       f'Check that {hint} in .env points to a reachable address and restart the server.')
             self.send_json(500, json.dumps({'error': msg}).encode())
 
     def serve_lql_run(self):
@@ -2084,8 +2251,9 @@ LW_PROFILE = _lw_profile()
 account, api_key, api_secret = _lw_creds()
 LW_READY = bool(account and api_key and api_secret)
 
-print(f'Web AI Agent  →  http://localhost:{PORT}')
-print(f'Gateway       →  {UPSTREAM.rstrip("/")}/v1/*  key:{"ok" if VIRTUAL_KEY else "MISSING"}')
+print(f'FortiAIScout  →  http://localhost:{PORT}')
+print(f'Gateway       →  {current_upstream().rstrip("/")}/v1/*  key:{"ok" if VIRTUAL_KEY else "MISSING"}'
+      f'{"  (via TokenIQ)" if _headroom_enabled() else ""}')
 print(f'FortiCNAPP    →  creds:{"ok" if LW_READY else "MISSING"}  cli:{"ok" if LW_AVAILABLE else "not found"}')
 print(f'LQL dir       →  {LQL_QUERIES_DIR or "not set"}')
 

@@ -21,3 +21,27 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     });
   });
 });
+
+// "Ask AI about selection" — right-click context menu, works on any selectable text
+// including Chrome's built-in PDF viewer (contexts:['selection'] fires there too,
+// unlike a content script, which can't attach inside the PDF renderer).
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id:       'ask-ai-selection',
+    title:    'Ask AI about selection',
+    contexts: ['selection'],
+  });
+});
+
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId !== 'ask-ai-selection' || !info.selectionText) return;
+  const windowId = tab?.windowId;
+  if (!windowId) return;
+
+  chrome.storage.session.set({ pendingSelection: info.selectionText }, () => {
+    chrome.runtime.sendMessage({ type: 'TEXT_SELECTED', text: info.selectionText }, () => {
+      void chrome.runtime.lastError; // panel not open yet — pendingSelection covers that
+      chrome.sidePanel.open({ windowId });
+    });
+  });
+});

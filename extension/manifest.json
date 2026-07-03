@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Web AI Agent",
+  "name": "FortiAIScout",
   "version": "2.0",
-  "description": "Secure AI chat side panel — Web AI Agent",
-  "permissions": ["storage", "sidePanel", "tabs", "activeTab", "scripting", "identity"],
+  "description": "Secure AI chat side panel — FortiAIScout",
+  "permissions": ["storage", "sidePanel", "tabs", "activeTab", "scripting", "identity", "contextMenus"],
   "host_permissions": ["https://*/*", "http://localhost/*"],
   "content_security_policy": {
     "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https://api.github.com https://raw.githubusercontent.com https: http://localhost:45321; img-src 'self' data:"
@@ -16,7 +16,7 @@
   }],
   "background": { "service_worker": "background.js" },
   "action": {
-    "default_title": "Web AI Agent",
+    "default_title": "FortiAIScout",
     "default_icon": { "16": "icon16.png", "48": "icon48.png", "128": "icon128.png" }
   },
   "side_panel": { "default_path": "panel.html" },

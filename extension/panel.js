@@ -4,60 +4,28 @@
 const BASE_URL       = 'http://localhost:45321';
 const MAX_TOKENS     = 4096;
 const PAGE_MAX_CHARS = 12000;
-const SYSTEM_PROMPT = `You are a CISO-level security analyst. For security findings produce a clean, structured report using the HTML components below. Keep it readable — no walls of text, no clutter.
+const SYSTEM_PROMPT = `You are a security engineer. For security findings, answer in plain Markdown — no exec-summary prose, no filler, no walls of text.
 
-## Available HTML components
+## Structure
+If the user's message includes an explicit report template, follow that EXACTLY instead of the structure below — it takes precedence. Otherwise, default to:
+1. **Objective** — one line: what was investigated or the question being answered.
+2. **Findings** — a standard Markdown table (pipe syntax) listing every matched resource, one row each. If there are zero matches, say so in one line instead of an empty table.
+3. **Fix** — only if remediation applies: a short numbered list, one line each, exact command/console step in a fenced code block. Omit entirely for pure inventory/lookup questions.
 
-**Metric strip** — top-line numbers only. Use critical | high | medium | ok | info as the class.
-<div class="rpt-metrics">
-  <div class="rpt-metric critical"><div class="rpt-metric-value">N</div><div class="rpt-metric-label">Critical</div></div>
-  <div class="rpt-metric high"><div class="rpt-metric-value">N</div><div class="rpt-metric-label">High</div></div>
-  <div class="rpt-metric info"><div class="rpt-metric-value">N</div><div class="rpt-metric-label">Hosts affected</div></div>
-</div>
+## Components
 
-**Severity badge** (inline): <span class="rpt-badge critical">CRITICAL</span> <span class="rpt-badge high">HIGH</span> <span class="rpt-badge medium">MEDIUM</span> <span class="rpt-badge low">LOW</span>
+Table — use for ANY list of 2+ resources (instances, buckets, roles, findings, etc.). Real Markdown pipe-table syntax, not HTML. Pick columns that fit the data:
+| Resource | Type | Region/Account | Detail |
+|---|---|---|---|
+| i-0abc123 | EC2 | us-east-1 · 123456789012 | <span class="rpt-badge high">HIGH</span> public IP, no IMDSv2 |
 
-**Resource list** — one card per impacted resource.
-<div class="rpt-resources">
-  <div class="rpt-resource critical">
-    <div class="rpt-resource-name">resource-name</div>
-    <div class="rpt-resource-meta"><span class="rpt-badge critical">Critical</span> us-east-1 · AWS · account:123456789012 · 🌐 internet-exposed</div>
-  </div>
-</div>
+Severity badge (inline, sparingly — flag a critical/high row inside a table cell, not decoration): <span class="rpt-badge critical">CRITICAL</span> <span class="rpt-badge high">HIGH</span> — this is the ONLY raw HTML allowed; everything else must be plain Markdown.
 
-**Action items** — numbered fix steps, one per action.
-<div class="rpt-actions">
-  <div class="rpt-action critical">
-    <div class="rpt-action-num">1</div>
-    <div class="rpt-action-body">
-      <div class="rpt-action-title">What to do</div>
-      <div class="rpt-action-why">Business risk if not done</div>
-      <div class="rpt-action-priority">Urgency: NOW / 24h / 7d / 30d</div>
-    </div>
-  </div>
-</div>
-
-**Section callout** — exec summary, key insight, or decision box.
-<div class="rpt-section">Key message. <strong>Decision required:</strong> action needed.</div>
-<div class="rpt-section warn">Warning.</div>
-<div class="rpt-section ok">All clear / remediated.</div>
-
-**Section divider**:
-<div class="rpt-divider">Section Title</div>
-
-## Report structure — always follow this order
-
-1. **Metric strip** — 3–5 numbers: severity counts + affected resource count
-2. **Executive Review** — \`rpt-section\`: 2 sentences max. What is at risk, what is the business impact. End with **Decision required:** one sentence.
-3. **Business Impact** divider + 2–3 bullet points (plain markdown) on what happens if not fixed
-4. **Affected Resources** divider + resource cards (one per asset)
-5. **How to Fix** divider + action items — each MUST include the exact CLI/console command in a fenced code block (e.g. \`apt-get install pkg=version\`, not just "apply patch"). Urgency: NOW / 24h / 7d / 30d. Owner: security / DevOps / cloud admin.
-6. **Next Steps** — \`rpt-section ok\` or \`rpt-section\`: one sentence — who does what by when.
-
-Rules:
-- Never use markdown tables for structured data — use resource cards instead.
-- Keep prose short — bullet points preferred over paragraphs.
-- For non-security questions, skip the report structure and answer directly.`;
+## Rules
+- Prefer the table over prose or cards for any resource list — more compact, easier to scan.
+- No metric-strip cards, no per-resource cards, no colored callout boxes — this is an engineering report, not an exec deck.
+- Fix section: exact commands only, skip the "why" paragraphs.
+- For non-security questions, skip this structure and answer directly.`;
 const ROLE_LABELS    = { user: 'you', ai: 'ai', system: 'sys' };
 
 // ── Gateway profiles ──────────────────────────────────────────────────────
@@ -180,7 +148,10 @@ async function autoFillFromConfig() {
   };
   fill(urlInput,  'gateway_url', 'bf_url');
   fill(keyInput,  'api_key',     'bf_key');
-  if (cfg.gateway_url || cfg.api_key) setStatus('config loaded', 'ok');
+  if (cfg.gateway_url || cfg.api_key) {
+    const gw = el('gateway').value || 'bifrost';
+    setStatus(gw === 'bifrost' ? 'Bifrost Status OK' : 'config loaded', 'ok');
+  }
 
   const lwReady = cfg.lw_ready !== false;   // creds — LQL/CVE/Compliance
   const lwCli   = cfg.lw_cli   !== false;   // CLI binary — CodeSec/SBOM
@@ -233,15 +204,21 @@ async function showGreeting() {
   }
 
   const name = firstName ? `, ${firstName.charAt(0).toUpperCase() + firstName.slice(1)}` : '';
-  appendTurn('ai', `**${greeting()}${name}!** — I'm your Web AI Assistant, built into the browser. I can help you understand the page you're viewing and connect directly to your FortiCNAPP environment.
+  appendTurn('ai', `**${greeting()}${name}!** 👋 I'm **FortiAIScout** — think of me as a security engineer sitting next to you while you browse. Whatever you're looking at, I'm happy to dig in with you.
 
-• 📄 **Read** / **TL;DR** — load the current page into context or generate a concise summary
-• 🛡 **Scan Code** — run SCA and SAST scans against code found on the current page or a GitHub repository
+And if you're a **FortiCNAPP** customer, I can plug directly into your environment — compliance reports, CVE lookups, LQL queries, and full cloud posture investigation, all from right here.
+
+Here's what I can help with:
+
+• 📄 **Read** / **TL;DR** — pull this page into context, or get a quick plain-English summary
+• 🖱 **Select text → right-click → "Ask AI about selection"** — works on any page, even PDFs
+• 🛡 **Scan Code** — SCA + SAST on code from this page or a GitHub repo
   - SAST: Go · Java · JavaScript · PHP · Python · TypeScript
   - SCA: .NET · C/C++ · Go · Java · Node.js · PHP · Python · Ruby · Rust
-• 🔰 **FortiCNAPP Security Tools** (Cloud Security) — run compliance reports, search CVEs, execute LQL queries, and investigate cloud assets, vulnerabilities, risks, and security posture
+• 🔰 **FortiCNAPP** — Compliance, AI Assist, and Attack Surface analysis (Scan Code lives in this menu too)
+• ⚙ **Admin** — swap AI gateway, model, or the TokenIQ compression proxy any time
 
-Type anything to get started.`);
+Ask me anything, or pick a tool above to get started.`);
 }
 showGreeting();
 
@@ -253,16 +230,79 @@ const saveSession = (key, input) => {
 urlInput.addEventListener('change',  () => saveSession('bf_url',  urlInput));
 keyInput.addEventListener('change',  () => saveSession('bf_key',  keyInput));
 key2Input.addEventListener('change', () => saveSession('bf_key2', key2Input));
-el('model').addEventListener('change', () => chrome.storage.local.set({ bf_model: el('model').value }));
+el('model').addEventListener('change', () => {
+  const model = el('model').value;
+  chrome.storage.local.set({ bf_model: model });
+  // Persist to .env's ANTHROPIC_DEFAULT_MODEL so server-side calls (/lql/generate) stay in
+  // sync with whatever model the user is chatting with — best-effort, non-blocking.
+  fetch(BASE_URL + '/model', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ model }),
+  }).catch(() => { /* offline — local chat still uses the picked model regardless */ });
+});
 
 // ── Markdown renderer ─────────────────────────────────────────────────────
 // Escape before transform so model output cannot inject HTML.
+// Radar/spider chart for a small set of 0-100 risk axes (e.g. CVE Critical Context).
+// Pure SVG, no deps — geometry computed here rather than trusting the model to hand-draw it.
+function renderRadarChart(axes, values, title) {
+  const n = axes.length;
+  // Wider-than-tall viewBox: axis labels overflow horizontally at the left/right extremes far
+  // more than vertically, so a square box was clipping longer labels (e.g. "Privileges Required").
+  const w = 320, h = 260, cx = w / 2, cy = h / 2 + 2, R = 74;
+  const pt = (r, i) => {
+    const a = (-90 + i * 360 / n) * Math.PI / 180;
+    return [cx + r * Math.cos(a), cy + r * Math.sin(a)];
+  };
+  const rings = [0.25, 0.5, 0.75, 1].map(f =>
+    `<polygon points="${Array.from({length:n},(_,i)=>pt(R*f,i).join(',')).join(' ')}" fill="none" stroke="#e5e8ee" stroke-width="1"/>`
+  ).join('');
+  const axisLines = Array.from({length:n},(_,i) => {
+    const [x,y] = pt(R,i);
+    return `<line x1="${cx}" y1="${cy}" x2="${x.toFixed(1)}" y2="${y.toFixed(1)}" stroke="#d0d5dd" stroke-width="1"/>`;
+  }).join('');
+  const dataPoly = Array.from({length:n},(_,i) => {
+    const v = Math.max(0, Math.min(100, Number(values[i]) || 0)) / 100;
+    const [x,y] = pt(R,i);
+    return [cx + (x-cx)*v, cy + (y-cy)*v].join(',');
+  }).join(' ');
+  // Wrap multi-word labels onto two lines — halves the horizontal extent of the longest labels,
+  // which is what was actually causing the clipping (a wider viewBox alone isn't enough for a
+  // label like "Privileges Required" sitting at the exact left/right extreme of the chart).
+  const wrapLabel = name => {
+    const words = name.split(' ');
+    if (words.length < 2) return [name];
+    const mid = Math.ceil(words.length / 2);
+    return [words.slice(0, mid).join(' '), words.slice(mid).join(' ')];
+  };
+  const labels = Array.from({length:n},(_,i) => {
+    const [lx,ly] = pt(R + 26, i);
+    const anchor = lx < cx - 4 ? 'end' : lx > cx + 4 ? 'start' : 'middle';
+    const lines = wrapLabel(axes[i]);
+    const nameLines = lines.map((line, li) =>
+      `<tspan x="${lx.toFixed(1)}" dy="${li === 0 ? 0 : 11}">${esc(line)}</tspan>`
+    ).join('');
+    const valueY = ly + lines.length * 11 + 2;
+    return `<text x="${lx.toFixed(1)}" y="${ly.toFixed(1)}" font-size="9.5" font-weight="600" fill="#444" text-anchor="${anchor}" dominant-baseline="middle">${nameLines}</text>`
+         + `<text x="${lx.toFixed(1)}" y="${valueY.toFixed(1)}" font-size="9" fill="#999" text-anchor="${anchor}">${Math.round(values[i])}%</text>`;
+  }).join('');
+  return `<div class="rpt-radar">${title ? `<div class="rpt-radar-title">${esc(title)}</div>` : ''}`
+       + `<svg viewBox="0 0 ${w} ${h}" width="100%" style="max-width:340px;display:block;margin:0 auto">`
+       + `${rings}${axisLines}<polygon points="${dataPoly}" fill="rgba(204,0,0,.14)" stroke="#cc0000" stroke-width="1.6"/>${labels}</svg></div>`;
+}
+
 function renderMarkdown(text) {
   const link = (href, label) => {
     const url = /^https?:\/\//i.test(href) ? href : `https://${href}`;
     return `<a class="ext-link" data-href="${url}">${label}</a>`;
   };
   const inline = s => {
+    // Whitelisted pass-through: a severity badge is the one raw HTML tag the model may emit
+    // inline (e.g. inside a markdown table cell). esc() has already turned it into literal
+    // "&lt;span...&gt;" text by this point — un-escape only this exact safe pattern.
+    s = s.replace(/&lt;span class="rpt-badge (critical|high|medium|low)"&gt;([^&]*?)&lt;\/span&gt;/g,
+                  '<span class="rpt-badge $1">$2</span>');
     s = s.replace(/`([^`\n]+)`/g,          '<code>$1</code>');
     s = s.replace(/\*\*\*([^*]+)\*\*\*/g,  '<strong><em>$1</em></strong>');
     s = s.replace(/\*\*([^*]+)\*\*/g,      '<strong>$1</strong>');
@@ -297,6 +337,15 @@ function renderMarkdown(text) {
     if (i % 2 === 1) {
       const lang = (part.match(/^```(\w+)/) || [])[1] || '';
       const code = part.replace(/^```\w*\n?/, '').replace(/```$/, '');
+      if (lang === 'radar') {
+        try {
+          const data = JSON.parse(code.trim());
+          if (Array.isArray(data.axes) && Array.isArray(data.values) &&
+              data.axes.length === data.values.length && data.axes.length >= 3) {
+            return renderRadarChart(data.axes, data.values, data.title);
+          }
+        } catch (_) { /* malformed — fall through to a plain code block */ }
+      }
       return `<pre${lang ? ` data-lang="${esc(lang)}"` : ''}><code>${esc(code.trimEnd())}</code></pre>`;
     }
 
@@ -313,7 +362,7 @@ function renderMarkdown(text) {
       if (!tableRows.length) return;
       const header = tableRows[0].map(c => `<th>${inline(c)}</th>`).join('');
       const body   = tableRows.slice(2).map(r => `<tr>${r.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`).join('');
-      out.push(`<table><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`);
+      out.push(`<table class="rpt-table"><thead><tr>${header}</tr></thead><tbody>${body}</tbody></table>`);
       tableRows = [];
     };
 
@@ -460,44 +509,23 @@ function makePdfBtn(getSourceEl) {
       'fg-risk-low':      'background:#4caf50;color:#fff;',
       'fg-date':          'color:#888;font-size:10px;margin-left:auto;',
       'cve-summary':      'margin:6px 0;font-size:12px;',
-      // Report visual components
-      'rpt-metrics':       'display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:6px;margin:8px 0;',
-      'rpt-metric':        'background:#f4f7fb;border:1px solid #d0d5dd;border-radius:8px;padding:8px 10px;text-align:center;',
-      'rpt-metric-value':  'font-size:20px;font-weight:800;line-height:1.1;color:#111;',
-      'rpt-metric-label':  'font-size:9.5px;color:#888;text-transform:uppercase;letter-spacing:.4px;margin-top:2px;',
-      'rpt-badge':         'display:inline-block;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:.3px;',
-      'rpt-resources':     'display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px;margin:8px 0;',
-      'rpt-resource':      'background:#f9fafb;border:1px solid #d0d5dd;border-left:3px solid #999;border-radius:6px;padding:7px 9px;font-size:11px;',
-      'rpt-resource-name': 'font-weight:700;font-size:11px;color:#111;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px;',
-      'rpt-resource-meta': 'font-size:10px;color:#666;display:flex;flex-wrap:wrap;gap:4px;align-items:center;',
-      'rpt-actions':       'margin:8px 0;',
-      'rpt-action':        'display:flex;align-items:flex-start;gap:8px;padding:7px 9px;margin-bottom:5px;background:#f4f7fb;border:1px solid #d0d5dd;border-radius:7px;font-size:11px;',
-      'rpt-action-num':    'min-width:20px;height:20px;border-radius:50%;background:#e5e7eb;border:1px solid #ccc;font-size:10px;font-weight:700;color:#555;display:flex;align-items:center;justify-content:center;flex-shrink:0;',
-      'rpt-action-body':   'flex:1;min-width:0;',
-      'rpt-action-title':  'font-weight:700;color:#111;margin-bottom:2px;',
-      'rpt-action-why':    'color:#666;font-size:10px;margin-bottom:3px;',
-      'rpt-action-priority':'font-size:9.5px;font-weight:700;color:#888;text-transform:uppercase;letter-spacing:.3px;',
-      'rpt-section':       'margin:10px 0;padding:8px 10px;background:#fff5f5;border:1px solid #f0d0d0;border-left:3px solid #cc0000;border-radius:0 8px 8px 0;font-size:11.5px;color:#111;',
+      // Report visual components — minimal: table + inline badge only
+      'rpt-table':         'width:100%;border-collapse:collapse;margin:8px 0;font-size:11px;',
+      'rpt-badge':         'display:inline-block;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:.3px;border:1px solid #999;color:#333;',
+      'rpt-section':       'margin:10px 0;padding:8px 10px;background:#fafafa;border:1px solid #ddd;border-left:3px solid #888;border-radius:0 6px 6px 0;font-size:11.5px;color:#111;',
       'rpt-divider':       'display:flex;align-items:center;gap:8px;margin:10px 0 6px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#888;',
+      'rpt-radar':         'margin:8px 0;padding:8px 6px 4px;background:#fff;border:1px solid #d0d5dd;border-radius:4px;',
+      'rpt-radar-title':   'font-size:10px;font-weight:700;color:#555;text-transform:uppercase;letter-spacing:.4px;text-align:center;margin-bottom:2px;',
     };
     clone.querySelectorAll('*').forEach(el => {
       el.classList.forEach(cls => {
         if (styleMap[cls]) el.style.cssText += styleMap[cls];
       });
-      // Severity colour overrides for rpt-* compound classes
-      const sevColours = { critical: '#cc0000', high: '#e65c00', medium: '#f59e0b', low: '#4caf50', ok: '#059669', info: '#2563eb' };
-      const sevText    = { critical: '#fff', high: '#fff', medium: '#000', low: '#fff', ok: '#fff', info: '#fff' };
+      // Muted severity accent — only critical/high get a colour cue, rest stay neutral
+      const sevColours = { critical: '#cc0000', high: '#e65c00' };
       for (const [sev, col] of Object.entries(sevColours)) {
-        if (el.classList.contains(sev)) {
-          if (el.classList.contains('rpt-metric'))   el.style.cssText += `border-left:3px solid ${col};`;
-          if (el.classList.contains('rpt-metric-value')) el.style.cssText += `color:${col};`;
-          if (el.classList.contains('rpt-resource')) el.style.cssText += `border-left-color:${col};`;
-          if (el.classList.contains('rpt-action'))   el.style.cssText += `border-left:3px solid ${col};`;
-          if (el.classList.contains('rpt-action-num')) el.style.cssText += `background:${col};color:${sevText[sev]};border-color:${col};`;
-          if (el.classList.contains('rpt-badge'))    el.style.cssText += `background:${col};color:${sevText[sev]};`;
-          if (el.classList.contains('rpt-section') && sev === 'ok') el.style.cssText += `background:#f0fdf4;border-left-color:#059669;border-color:#bbf7d0;`;
-          if (el.classList.contains('rpt-section') && sev === 'warn') el.style.cssText += `background:#fffbeb;border-left-color:#f59e0b;border-color:#fde68a;`;
-          if (el.classList.contains('rpt-section') && sev === 'info') el.style.cssText += `background:#eff6ff;border-left-color:#2563eb;border-color:#bfdbfe;`;
+        if (el.classList.contains(sev) && el.classList.contains('rpt-badge')) {
+          el.style.cssText += `background:${col};color:#fff;border-color:${col};`;
         }
       }
       el.removeAttribute('class');
@@ -507,7 +535,7 @@ function makePdfBtn(getSourceEl) {
     if (!win) return;
 
     win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
-<title>Web AI Agent — Security Report</title>
+<title>FortiAIScout — Security Report</title>
 <style>
   * { box-sizing: border-box; }
   body { font-family: Arial, sans-serif; font-size: 13px; color: #111; max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.6; }
@@ -534,7 +562,7 @@ function makePdfBtn(getSourceEl) {
 </head><body>
 ${clone.innerHTML}
 <hr style="margin-top:40px">
-<p style="color:#888;font-size:11px">Generated by Web AI Agent &mdash; ${new Date().toLocaleString()}</p>
+<p style="color:#888;font-size:11px">Generated by FortiAIScout &mdash; ${new Date().toLocaleString()}</p>
 </body></html>`);
     win.document.close();
     win.focus();
@@ -564,7 +592,7 @@ function appendTurn(role, text = '') {
   const col = Object.assign(document.createElement('div'), { className: 'bubble-col' });
   const lbl = Object.assign(document.createElement('div'), {
     className: 'turn-label',
-    textContent: role === 'user' ? 'You' : 'Web AI Agent',
+    textContent: role === 'user' ? 'You' : 'FortiAIScout',
   });
   const body = Object.assign(document.createElement('div'), { className: 'content' });
   if (text) {
@@ -583,7 +611,7 @@ function appendTurn(role, text = '') {
   if (role === 'ai') {
     const bodyClone   = Object.assign(document.createElement('div'), { className: 'content' });
     const colClone    = Object.assign(document.createElement('div'), { className: 'bubble-col' });
-    const lblClone    = Object.assign(document.createElement('div'), { className: 'turn-label', textContent: 'Web AI Agent' });
+    const lblClone    = Object.assign(document.createElement('div'), { className: 'turn-label', textContent: 'FortiAIScout' });
     const avatarClone = Object.assign(document.createElement('div'), { className: 'role ai', textContent: 'AI' });
     const turnClone   = Object.assign(document.createElement('div'), { className: 'turn turn-ai' });
 
@@ -658,53 +686,146 @@ async function withPage(btnId, fn) {
   }
 }
 
-// ── FortiGuard outbreak alert flash ─────────────────────────────────────────
-(async function initFortiGuardAlert() {
-  const btn       = el('fortiguard-feed');
-  const STORE_KEY = 'fg_seen_outbreak';
-  const FIVE_DAYS = 5 * 24 * 60 * 60 * 1000;
-
-  async function checkOutbreaks() {
-    try {
-      const res  = await fetch(BASE_URL + '/fortiguard/outbreaks');
-      if (!res.ok) return;
-      const data = await res.json();
-      if (!data.items?.length) return;
-
-      const now    = Date.now();
-      const newest = data.items
-        .map(i => ({ ...i, ts: i.pubDate ? new Date(i.pubDate).getTime() : 0 }))
-        .filter(i => i.ts > 0 && (now - i.ts) < FIVE_DAYS);
-
-      if (!newest.length) { btn.classList.remove('fg-alert'); return; }
-
-      // Check if user already saw this alert
-      const { [STORE_KEY]: seen } = await chrome.storage.local.get(STORE_KEY);
-      const latestTs = Math.max(...newest.map(i => i.ts));
-      if (seen && seen >= latestTs) { btn.classList.remove('fg-alert'); return; }
-
-      btn.classList.add('fg-alert');
-      btn.title = `⚠ ${newest.length} outbreak alert${newest.length > 1 ? 's' : ''} in the last 5 days — click to view`;
-    } catch { /* offline */ }
-  }
-
-  btn.addEventListener('click', async () => {
-    btn.classList.remove('fg-alert');
-    // Record seen time so it won't flash again for same alerts
-    await chrome.storage.local.set({ [STORE_KEY]: Date.now() });
-    chrome.tabs.create({ url: 'https://www.fortinet.com/fortiguard/outbreak-alert?tab=outbreak-alerts' });
-  });
-
-  // Check on load, then every 30 minutes
-  checkOutbreaks();
-  setInterval(checkOutbreaks, 30 * 60 * 1000);
-})();
-
 el('fcnapp-community').addEventListener('click', () => {
   chrome.tabs.create({ url: 'https://community.fortinet.com/forticnapp-63' });
 });
 
+// ── TokenIQ: single combined badge (routing + savings) + dashboard link ─────
+// One merged element instead of two separate badges — was crowding the config bar. Runs
+// independently of autoFillFromConfig()'s url/key cache gate — the whole point is to surface the
+// current /config value even when a stale chrome.storage.session value is what the extension is
+// actually using (see: the Headroom docker-internal-hostname bug). Clicking the badge toggles
+// routing via serve.py's /headroom/toggle, which persists to .env and always hands back a
+// browser-reachable gateway_url (never the Docker-internal address).
+(function initTokenIQ() {
+  const badge = el('routing-badge');
+  const dashboardBtn = el('dashboard-token');
+  const dot = el('routing-dot'); // small at-a-glance indicator on the Admin button itself,
+                                  // since the routing badge now lives inside a closed menu
+  if (!badge) return;
+
+  let viaHeadroom        = false;
+  let headroomConfigured = false;
+  let busyToggling       = false;
+  let dashboardUrl       = null;
+  let savingsPct         = null;
+  let savingsDetail      = ''; // e.g. "— 370.6K tokens saved lifetime over 52 requests."
+
+  const fmtTokens = n =>
+    n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` :
+    n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
+
+  // Single source of truth for badge text/title — refreshSavings() must never mutate
+  // badge.title directly, or the next render() call (from either refresh function) silently
+  // discards it, since render() always does a full overwrite, not an append.
+  function render() {
+    badge.classList.add('ok');
+    const pctSuffix = viaHeadroom && typeof savingsPct === 'number' ? ` · ${savingsPct}%` : '';
+    if (viaHeadroom) {
+      badge.textContent = `🔀 TokenIQ${pctSuffix}`;
+      badge.title = `Chat requests are routed through the local TokenIQ compression proxy. Click to switch back to direct. ${savingsDetail}`;
+    } else {
+      badge.textContent = '🔀 direct';
+      badge.title = (headroomConfigured
+        ? 'Chat requests go straight to the AI gateway. Click to route through TokenIQ instead.'
+        : 'Chat requests go straight to the AI gateway. TokenIQ is not configured (set HEADROOM_URL in .env) — click for details.'
+      ) + ` ${savingsDetail}`;
+    }
+    badge.style.display = '';
+
+    if (dot) {
+      dot.classList.toggle('ok', viaHeadroom);
+      dot.title = viaHeadroom ? `via TokenIQ${pctSuffix}` : 'direct to AI gateway';
+    }
+  }
+
+  async function refreshRouting() {
+    try {
+      const res = await fetch(BASE_URL + '/config');
+      if (!res.ok) return;
+      const cfg = await res.json();
+      viaHeadroom        = !!cfg.via_headroom;
+      headroomConfigured = !!cfg.headroom_configured;
+      render();
+    } catch { /* serve.py unreachable — leave badge as last-known state */ }
+  }
+
+  async function refreshSavings() {
+    try {
+      const res  = await fetch(BASE_URL + '/headroom/stats');
+      const data = res.ok ? await res.json() : { available: false };
+      if (!data.available) { dashboardUrl = null; savingsPct = null; savingsDetail = ''; return; }
+      dashboardUrl  = data.dashboard_url;
+      savingsPct    = typeof data.savings_percent === 'number' ? data.savings_percent : null;
+      savingsDetail = `— ${fmtTokens(data.tokens_saved)} tokens saved lifetime over ${data.requests} requests.`;
+      render();
+    } catch { /* offline — leave last-known state */ }
+  }
+
+  async function applyGatewayUrl(url) {
+    // Bypass autoFillFromConfig()'s "only fill if empty" guard — this is an explicit
+    // user action and must take effect on the very next request, not just on next reload.
+    urlInput.value = url;
+    await chrome.storage.session.set({ bf_url: url });
+  }
+
+  badge.addEventListener('click', async () => {
+    if (busyToggling) return;
+    if (guardBusy()) return;
+
+    const target = !viaHeadroom;
+    if (target && !headroomConfigured) {
+      appendTurn('system', 'TokenIQ is not configured — set HEADROOM_URL (and HEADROOM_DASHBOARD_URL, if running in Docker) in .env, then restart serve.py.');
+      return;
+    }
+    const confirmed = confirm(
+      target
+        ? 'Switch chat requests to the local TokenIQ compression proxy?'
+        : 'Switch chat requests back to going direct to the AI gateway?'
+    );
+    if (!confirmed) return;
+
+    busyToggling = true;
+    try {
+      const res = await fetch(BASE_URL + '/headroom/toggle', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ enable: target }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+      viaHeadroom = !!data.via_headroom;
+      await applyGatewayUrl(data.gateway_url);
+      render();
+      setStatus(viaHeadroom ? 'routing: via TokenIQ' : 'routing: direct to gateway', 'ok');
+    } catch (e) {
+      appendTurn('system', `Failed to switch routing: ${e.message}`);
+    } finally {
+      busyToggling = false;
+    }
+  });
+
+  if (dashboardBtn) {
+    dashboardBtn.addEventListener('click', () => {
+      if (dashboardUrl) {
+        chrome.tabs.create({ url: dashboardUrl });
+      } else {
+        appendTurn('system', 'TokenIQ not configured — set HEADROOM_URL in .env to enable the token-savings dashboard.');
+      }
+    });
+  }
+
+  function refresh() {
+    refreshRouting();
+    refreshSavings();
+  }
+  refresh();
+  setInterval(refresh, 60 * 1000);
+})();
+
 el('read-page').addEventListener('click', () => withPage('read-page', page => {
+  if (guardBusy()) return;
   history.push({ role: 'user',      content: pageCtx(page) });
   history.push({ role: 'assistant', content: 'Page loaded. Ask me anything about it.' });
   appendTurn('system', `📄 "${page.title}"`);
@@ -714,9 +835,31 @@ el('read-page').addEventListener('click', () => withPage('read-page', page => {
 }));
 
 el('tldr').addEventListener('click', () => withPage('tldr', async page => {
+  if (guardBusy()) return;
   history.push({ role: 'user',      content: pageCtx(page) });
   history.push({ role: 'assistant', content: 'Page loaded.' });
-  history.push({ role: 'user',      content: 'TL;DR this page in 3-5 bullets. End each bullet with a markdown link to the most relevant source URL.' });
+  history.push({ role: 'user',      content:
+    'TL;DR this page. Identify each distinct topic it covers — a product, concept, or (for a changelog / ' +
+    'release-notes page) each separate month or version — and give each its own breakout (skip this ' +
+    'structure entirely and just answer normally if the page is a single narrow topic with nothing to ' +
+    'break out). For EACH topic, use this exact structure:\n\n' +
+    '### <topic name>\n' +
+    '- **What it is** — one line\n' +
+    '- **Why it matters** — one line\n' +
+    '- **2 key benefits:**\n' +
+    '  1. <first major benefit>\n' +
+    '  2. <second major benefit>\n\n' +
+    'The 2 benefits are REQUIRED for every topic — never leave them blank. Ground them in specifics actually ' +
+    'on the page (a named feature, a fixed issue, a stated metric) — for a release/changelog entry, phrase them ' +
+    'as benefits of adopting that specific release, not generic praise. If the page truly has nothing concrete ' +
+    'to support a benefit, write the most defensible inference instead of leaving the line empty. ' +
+    'If the topic is naturally comparable to an alternative tool/feed/approach (e.g. a vendor-native feature vs. ' +
+    'a third-party or bolt-on equivalent), let "Why it matters" reflect that differentiation — but only the kind ' +
+    'you can defend from what is actually on the page (integration depth, what it is wired into, what it replaces). ' +
+    'Never invent comparative claims you cannot support, like unverified "larger" or "better" dataset/coverage claims. ' +
+    'End each topic with a markdown link to the most relevant source URL. Keep every line tight — no filler, no repeating the page title. ' +
+    'Start your reply with the first "### <topic name>" line — no preamble, no "Here is the TL;DR" or similar opener, ' +
+    'not even if you look something up mid-answer and resume afterward.' });
   appendTurn('system', `📄 TL;DR — "${page.title}"`);
   el('read-page').classList.add('active');
   await send(true); // user turn already pushed above; silent avoids re-appending it
@@ -773,6 +916,22 @@ async function readStream(res, bubble, cursor) {
 }
 
 // ── Send ──────────────────────────────────────────────────────────────────
+// `history` is a single shared array mutated by several async flows (chat send,
+// LQL/CVE auto-report triggers, the LQL scoping conversation). Every entry point
+// that pushes a 'user' turn and then kicks off a fetch MUST check this first —
+// otherwise two flows can interleave pushes while both are in flight, and their
+// 'assistant' replies can land back-to-back at the end of history. That breaks
+// the strict user/assistant alternation the API requires and produces:
+//   "This model does not support assistant message prefill. The conversation
+//    must end with a user message." — on whatever silent send happens next.
+function guardBusy() {
+  if (busy) {
+    appendTurn('system', 'Still processing the previous request — wait for it to finish first.');
+    return true;
+  }
+  return false;
+}
+
 // silent = true: caller already pushed the user turn into history and appended it to the log,
 //   so send() must skip both steps to avoid duplicating the visible message.
 async function send(silent = false) {
@@ -874,6 +1033,41 @@ async function send(silent = false) {
       if (picker && !picker.contains(e.target) && e.target !== el('sbom')) {
         picker.classList.remove('open');
       }
+    }
+  });
+})();
+
+// ── Admin dropdown toggle (gateway / model / TokenIQ / community) ──────────
+// Same open/close pattern as the FortiCNAPP menu, except clicking inside only closes the
+// menu for actual action items (.admin-item) — the gateway/model <select> elements need
+// clicks to reach their native dropdown without the whole Admin menu closing underneath them.
+(function () {
+  const btn  = el('admin-btn');
+  const menu = el('admin-menu');
+  if (!btn || !menu) return;
+
+  btn.addEventListener('click', e => {
+    e.stopPropagation();
+    const isOpen = menu.classList.contains('open');
+    if (!isOpen) {
+      const r = btn.getBoundingClientRect();
+      menu.style.top  = `${r.bottom + 4}px`;
+      menu.style.left = `${r.left}px`;
+    }
+    menu.classList.toggle('open', !isOpen);
+    btn.classList.toggle('open', !isOpen);
+  });
+
+  menu.addEventListener('click', e => {
+    if (!e.target.closest('.admin-item')) return;
+    menu.classList.remove('open');
+    btn.classList.remove('open');
+  });
+
+  document.addEventListener('click', e => {
+    if (!btn.contains(e.target) && !menu.contains(e.target)) {
+      menu.classList.remove('open');
+      btn.classList.remove('open');
     }
   });
 })();
@@ -1173,8 +1367,12 @@ async function extractPageCode() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error('No active tab');
   const url = tab.url || '';
-  if (/^(chrome|chrome-extension|about|edge):\/\//i.test(url))
-    throw new Error(`Cannot scan a browser page (${url.split('://')[0]}://). Navigate to a Github web page first.`);
+  // Mirror manifest.json's host_permissions (https://*/* and http://localhost/*) instead of
+  // blocklisting known-bad schemes — that blocklist missed http://127.0.0.1 (e.g. the TokenIQ
+  // dashboard tab), which fell through to executeScript and surfaced Chrome's raw permission
+  // error instead of a helpful message.
+  const isScannable = /^https:\/\//i.test(url) || /^http:\/\/localhost(:\d+)?(\/|$)/i.test(url);
+  if (!isScannable) throw new Error('Navigate to a Github Public web page first.');
 
   const ghRepo = githubRepoFromUrl(tab.url || '');
   if (ghRepo) {
@@ -1444,7 +1642,7 @@ async function runCodeSec(mode) {
   try {
     const { files, ghCtx } = await extractPageCode();
     if (!files.length) {
-      appendTurn('system', 'No code blocks found on this page.');
+      appendTurn('system', 'No Code Found on this page...');
       setStatus('—');
       return;
     }
@@ -1606,14 +1804,9 @@ async function runComplianceReport() {
       statusEl.textContent = '✓ PDF downloaded';
       statusEl.className   = 'ok';
       setStatus('PDF ready', 'ok');
-      const msgEl  = appendTurn('system', `📋 Compliance PDF: ${fw.name}`);
-      const askBtn = document.createElement('button');
-      askBtn.className   = 'cs-sbom-btn';
-      askBtn.textContent = '🔍 Ask about this PDF';
-      askBtn.style.marginTop = '6px';
-      askBtn.addEventListener('click', () => loadCompliancePdfText(fw.name));
-      msgEl.appendChild(document.createElement('br'));
-      msgEl.appendChild(askBtn);
+      appendTurn('system',
+        `📋 Compliance PDF: ${fw.name} — opened in a new tab. Select any text in it and ` +
+        `right-click → "Ask AI about selection" to bring it into this chat.`);
     } else {
       const d = await res.json();
       throw new Error(d.error || 'No PDF returned');
@@ -1650,6 +1843,37 @@ chrome.storage.session.get('pendingCve', ({ pendingCve }) => {
   openCvePanel(pendingCve);
 });
 
+// ── Selection-to-chat: "Ask AI about selection" context menu ────────────────
+// Works on any page, including a PDF opened in Chrome's built-in viewer (a content
+// script can't attach inside the PDF renderer, but the browser-level context menu
+// still fires there since contexts:['selection'] isn't scoped by URL match pattern).
+const SELECTION_MAX_CHARS = 4000;
+
+function openSelectionInChat(text) {
+  ['codesec-panel', 'compliance-panel', 'lql-panel', 'cve-panel'].forEach(id =>
+    el(id).classList.remove('open'));
+  const trimmed = text.trim();
+  const clipped = trimmed.length > SELECTION_MAX_CHARS
+    ? trimmed.slice(0, SELECTION_MAX_CHARS) + '\n[…truncated]'
+    : trimmed;
+  const quoted = clipped.split('\n').map(l => `> ${l}`).join('\n');
+  el('prompt').value = `${quoted}\n\n`;
+  resizePrompt();
+  el('prompt').focus();
+  el('prompt').setSelectionRange(el('prompt').value.length, el('prompt').value.length);
+  setStatus('selection loaded — ask your question', 'ok');
+}
+
+chrome.runtime.onMessage.addListener(msg => {
+  if (msg.type === 'TEXT_SELECTED' && msg.text) openSelectionInChat(msg.text);
+});
+
+chrome.storage.session.get('pendingSelection', ({ pendingSelection }) => {
+  if (!pendingSelection) return;
+  chrome.storage.session.remove('pendingSelection');
+  openSelectionInChat(pendingSelection);
+});
+
 // ── FortiCNAPP CVE Attack Surface ────────────────────────────────────────────
 
 let _lastCveData = null;
@@ -1674,6 +1898,7 @@ el('cve-search').addEventListener('click', runCveSearch);
 
 el('cve-analyse').addEventListener('click', () => {
   if (!_lastCveData) return;
+  if (guardBusy()) return;
   el('cve-panel').classList.remove('open');
   const prompt = buildCveAnalysisPrompt(_lastCveData, _lastCveData.fgOutbreaks || []);
   history.push({ role: 'user', content: prompt });
@@ -1783,20 +2008,84 @@ function _regulatoryContext(regions = []) {
   });
   lines.push(
     ``,
-    `IMPORTANT: Include a "Regulatory & Compliance Obligations" section in the Next Steps.`,
-    `List the applicable frameworks above, their notification deadlines, and who (DPO / Legal / CISO) must act.`,
-    `If a breach cannot be ruled out, treat as a potential notifiable incident and state the notification deadline.`,
+    `IMPORTANT: Populate the report template's "## Compliance Deadlines" table using the frameworks/obligations`,
+    `above — one row per distinct obligation, columns: Regulation | Due | Owner | Action.`,
+    `Due dates must be computed from the actual discovery/exposure date given in the data — never invent one.`,
+    `If a breach cannot be ruled out, add a row for the notification obligation and state the deadline explicitly.`,
+    `Also add a "Preserve Evidence" bullet for anything these frameworks require retaining (e.g. breach record,`,
+    `access logs, forensic timeline) that isn't already covered by the finding-specific evidence bullets.`,
   );
   return lines.join('\n');
 }
 
-const EXEC_REPORT_TEMPLATE = `Write a security report following the 5-section structure in your system prompt.
-CRITICAL: Section 5 "How to Fix" MUST include:
-- A specific numbered action item per fix (use rpt-action components)
-- For each action: the exact CLI command, console step, or config change needed (fenced code block)
-- Urgency label: NOW / 24h / 7d / 30d based on severity and exploitation status
-- Who owns the fix (security team / DevOps / cloud admin)
-Do NOT write vague actions like "apply patches" — write the exact command or step.`;
+// Shared incident-report template for FortiCNAPP Advanced Analytics (LQL) and
+// Enriched Attack Threat Surface (CVE) reports. This OVERRIDES the system prompt's
+// default Objective/Findings/Fix structure per its own precedence rule.
+const INCIDENT_REPORT_TEMPLATE = `Use EXACTLY this Markdown template. Fill every placeholder from the data provided below; omit
+a whole section if it doesn't apply (e.g. no "Compliance Deadlines" section when no regulated
+region is affected, no "Critical Context" bullet you don't have data for). Never invent facts,
+dates, counts, or context not present in the data provided.
+
+# <one-line finding title>
+
+## Status
+**<CRITICAL|HIGH|MEDIUM|LOW>** — <N> of <total> (<pct>%) <one-line description of what's wrong>.
+
+## Affected <resource type — e.g. Buckets / Instances / Roles / Hosts>
+Markdown table, one row per resource. Last column is Status, using 🔴/🟠/🟡 for at-a-glance severity:
+| <col> | <col> | <col> | Status |
+|---|---|---|---|
+
+## Remediation — Execute NOW
+\`\`\`bash
+# group commands with a "# Account X (region)" comment header when there's more than one account/region
+<exact command per resource — real resource names/IDs from the data, never placeholders>
+\`\`\`
+
+**Verify:**
+\`\`\`bash
+<a command or loop that confirms the fix actually took effect>
+\`\`\`
+
+## Critical Context
+- **<label>**: <fact — only from data actually provided: log/audit gaps, confirmed reachability tests, missing
+  classification tags, related prior findings, etc. Omit this whole section if there is no such context.>
+
+## Compliance Deadlines
+Markdown table — only if a regulatory obligation applies to the affected region(s):
+| Regulation | Due | Owner | Action |
+|---|---|---|---|
+
+## Preserve Evidence
+- <bullet list of exactly what to preserve for this finding type and why>
+
+---
+**Report Generated**: <today's date, given below> | **Discovery Date**: <from data if known, else omit this field> | **Exposure Window**: <from data if known, else omit this field>`;
+
+function buildReportInstructions() {
+  const today = new Date().toISOString().slice(0, 10);
+  return `${INCIDENT_REPORT_TEMPLATE}\n\nToday's date: ${today}`;
+}
+
+// Computed (not model-authored) risk profile for the CVE report's "Critical Context" section —
+// geometry is unreliable coming from an LLM, so we derive the 5 axes straight from the CVSS
+// vector / EPSS / exposure data and hand the model a ready-made ```radar block to embed verbatim.
+function buildCveRadarBlock(d, intel) {
+  const vector = intel?.nvd?.cvssV3Vector;
+  if (!vector) return '';
+  const av = { N: 100, A: 70, L: 40, P: 15 }[(vector.match(/AV:([NALP])/) || [])[1]];
+  const pr = { N: 100, L: 65, H: 30 }[(vector.match(/PR:([NLH])/) || [])[1]];
+  const sc = { C: 100, U: 40 }[(vector.match(/\/S:([CU])/) || [])[1]];
+  if (av === undefined || pr === undefined || sc === undefined) return '';
+  const epss     = intel.epss ? Math.round(intel.epss.percentile * 100) : 0;
+  const exposure = d.total_affected ? Math.round((d.internet_exposed / d.total_affected) * 100) : 0;
+  const data = {
+    title: 'Risk Profile',
+    axes:  ['Attack Vector', 'Privileges Required', 'Scope Impact', 'EPSS Percentile', 'Internet Exposure'],
+    values: [av, pr, sc, epss, exposure],
+  };
+  return '```radar\n' + JSON.stringify(data) + '\n```';
+}
 
 function buildCveAnalysisPrompt(d, fgOutbreaks) {
   const intel        = d.cveIntel || {};
@@ -1883,15 +2172,26 @@ function buildCveAnalysisPrompt(d, fgOutbreaks) {
     h.containers.forEach(c => lines.push(`   ctr: ${c.name}${c.internet_exposed ? ' 🌐 INTERNET-EXPOSED' : ''}`));
   });
 
+  const radarBlock = buildCveRadarBlock(d, intel);
+
   lines.push(
     ``,
-    `Write a clean 5-section report following the system prompt structure exactly:`,
-    `1. Metric strip — total affected hosts, internet-exposed count, CVSS score, EPSS %`,
-    `2. Executive Review — 2 sentences: what is vulnerable, what is the blast radius. Decision required: patch or isolate.`,
-    `3. Business Impact — 2–3 bullets: data breach risk, compliance exposure, operational disruption`,
-    `4. Affected Resources — one resource card per host. rpt-resource-name must contain the FULL hostname (do not truncate). rpt-resource-meta must include: severity badge, CSP account ID, region, internet-exposed flag if applicable.`,
-    `5. How to Fix + Next Steps — MUST include the exact patch command (e.g. apt-get install <pkg>=<version>, yum update, docker pull <image>:<tag>), urgency (NOW/24h/7d), and who owns it. Use fenced code blocks for commands.`,
+    buildReportInstructions(),
+    ``,
+    `Report-specific guidance:`,
+    `- Title: "CVE ${d.cveId} Exposure"`,
+    `- Status stats: ${d.total_affected} hosts affected, ${d.internet_exposed} internet-exposed, CVSS ${intel.nvd?.cvssV3Score ?? '?'}, EPSS ${intel.epss?.score ?? '?'}.`,
+    `- "Affected Hosts" table: full hostname (never truncate), CSP account ID, region, severity, internet-exposed flag if applicable.`,
+    `- Remediation: exact patch command per host/package (e.g. apt-get install <pkg>=<version>, yum update, docker pull <image>:<tag>).`,
+    `- Discovery Date / Exposure Window are unknown for CVE data — omit those two fields from the report footer.`,
   );
+  if (radarBlock) {
+    lines.push(
+      `- "Critical Context" section: the very first line must be this exact fenced block, byte-for-byte, unchanged (it is a pre-computed risk-profile chart — do not edit the JSON):`,
+      radarBlock,
+      `  After that block, continue with the normal bullet list explaining what each axis means for this CVE.`,
+    );
+  }
   if (intel.kev?.inKev)             lines.push(`NOTE: This CVE is in CISA KEV — actively exploited. Urgency is NOW.`);
   if (intel.epss?.percentile > 0.9) lines.push(`NOTE: EPSS top 10th percentile — patch within 24h.`);
 
@@ -2422,9 +2722,10 @@ el('lql-run').addEventListener('click', async () => {
     const sample     = rows.slice(0, 50).map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
     const regionKeys = keys.filter(k => /region/i.test(k));
     const lqlRegions = [...new Set(rows.flatMap(r => regionKeys.map(k => r[k])).filter(Boolean))];
+    if (guardBusy()) return;
     history.push({
       role: 'user',
-      content: `Security finding data from LQL query "${query.id}" — ${count} rows:\n\n${sample}${formatApiEnrichment(data.api_enrichment)}\n\n${EXEC_REPORT_TEMPLATE}${_regulatoryContext(lqlRegions)}`,
+      content: `Security finding data from LQL query "${query.id}" — ${count} rows:\n\n${sample}${formatApiEnrichment(data.api_enrichment)}\n\n${buildReportInstructions()}${_regulatoryContext(lqlRegions)}`,
     });
     send(true); // auto-triggers executive analysis; user turn already pushed above
   } catch (e) {
@@ -2457,6 +2758,7 @@ let _genQueryText = '';
 // clarifying questions. After the AI responds, a "Re-run LQL" quick-action
 // button appears so the user can retry with a refined objective.
 function _startLqlScopingConversation(objective, errorMsg) {
+  if (guardBusy()) return;
   const scopingPrompt = [
     `The user tried to run a FortiCNAPP LQL security investigation with this objective:`,
     `"${objective}"`,
@@ -2548,16 +2850,94 @@ function _startLqlScopingConversation(objective, errorMsg) {
   });
 }
 
+// A cute dog runs laps around the whole panel and randomly leaves a 💩 behind while LQL
+// generation/validation/REST-enrichment is in flight; a runner sprints after each one to scoop
+// it up. Pure fun, no functional role.
+let _dogMoveTimer = null, _runnerTimer = null;
+let _poopTrail = [];   // { el, x, y } queued oldest-first — runner always chases index 0
+let _runnerBusy = false;
+
+function startDogPoop(dogEl, runnerEl, trailEl) {
+  const margin = 10, size = 46;
+  let lastX = 20, lastY = 60;
+
+  dogEl.style.display = 'inline-block';
+  dogEl.style.left = `${lastX}px`;
+  dogEl.style.top  = `${lastY}px`;
+
+  const nextDogMove = () => {
+    const maxX = Math.max(margin, window.innerWidth  - size - margin);
+    const maxY = Math.max(margin, window.innerHeight - size - margin);
+    const x = margin + Math.random() * (maxX - margin);
+    const y = margin + Math.random() * (maxY - margin);
+
+    if (Math.random() < 0.4) {
+      const poop = document.createElement('span');
+      poop.className = 'lql-poop';
+      poop.textContent = '💩';
+      const px = lastX + 14, py = lastY + 22;
+      poop.style.left = `${px}px`;
+      poop.style.top  = `${py}px`;
+      trailEl.appendChild(poop);
+      _poopTrail.push({ el: poop, x: px, y: py });
+    }
+
+    dogEl.style.setProperty('--dir', x < lastX ? -1 : 1);
+    dogEl.style.left = `${x}px`;
+    dogEl.style.top  = `${y}px`;
+    lastX = x; lastY = y;
+  };
+  nextDogMove();
+  _dogMoveTimer = setInterval(nextDogMove, 900); // was 1600ms — felt sluggish; matches the snappier CSS transition speed
+
+  runnerEl.style.display = 'inline-block';
+  runnerEl.style.left = '-40px';
+  runnerEl.style.top  = '-40px';
+
+  const chaseNext = () => {
+    if (_runnerBusy || !_poopTrail.length) return;
+    const target = _poopTrail[0];
+    _runnerBusy = true;
+    const curLeft = parseFloat(runnerEl.style.left) || 0;
+    runnerEl.style.setProperty('--dir', target.x < curLeft ? -1 : 1);
+    runnerEl.style.left = `${target.x - 10}px`;
+    runnerEl.style.top  = `${target.y - 6}px`;
+    setTimeout(() => {
+      target.el.classList.add('scooped');
+      setTimeout(() => {
+        target.el.remove();
+        _poopTrail.shift();
+        _runnerBusy = false;
+      }, 220);
+    }, 300); // matches the .28s left/top transition on .lql-runner
+  };
+  _runnerTimer = setInterval(chaseNext, 350); // was 600ms — checks/chases much more eagerly now
+}
+function stopDogPoop(dogEl, runnerEl, trailEl) {
+  clearInterval(_dogMoveTimer);
+  clearInterval(_runnerTimer);
+  dogEl.style.display    = 'none';
+  runnerEl.style.display = 'none';
+  _poopTrail.forEach(p => p.el.remove());
+  _poopTrail = [];
+  _runnerBusy = false;
+  trailEl.innerHTML = '';
+}
+
 el('lql-gen-btn').addEventListener('click', async () => {
   const objective = el('lql-objective').value.trim();
   if (!objective) return;
 
   const btn      = el('lql-gen-btn');
   const statusEl = el('lql-gen-status');
+  const dogEl    = el('lql-gen-dog');
+  const runnerEl = el('lql-gen-runner');
+  const trailEl  = el('lql-gen-poop-trail');
 
   btn.disabled         = true;
   statusEl.textContent = 'running…';
   statusEl.className   = '';
+  startDogPoop(dogEl, runnerEl, trailEl);
   _genQueryText        = '';
   el('lql-gen-results').innerHTML = '';
 
@@ -2571,9 +2951,22 @@ el('lql-gen-btn').addEventListener('click', async () => {
     if (data.error) throw new Error(data.error);
 
     if (data.queryId === 'USE_CVE_TAB') {
-      statusEl.textContent = '⚠ Use CVE tab';
-      statusEl.className   = 'err';
-      el('lql-gen-results').innerHTML = `<div class="lql-row-note" style="padding:8px 2px;color:var(--dim)">${data.note || ''}</div>`;
+      const cveMatch = objective.match(/CVE-\d{4}-\d{4,}/i);
+      if (cveMatch) {
+        const cveId = cveMatch[0].toUpperCase();
+        statusEl.textContent = `↪ running CVE tab for ${cveId}`;
+        statusEl.className   = 'ok';
+        el('lql-panel').classList.remove('open');
+        el('cve-panel').classList.add('open');
+        el('codesec-panel').classList.remove('open');
+        el('compliance-panel').classList.remove('open');
+        el('cve-input').value = cveId;
+        await runCveSearch();
+      } else {
+        statusEl.textContent = '⚠ Use CVE tab';
+        statusEl.className   = 'err';
+        el('lql-gen-results').innerHTML = `<div class="lql-row-note" style="padding:8px 2px;color:var(--dim)">${data.note || ''}</div>`;
+      }
       return;
     }
 
@@ -2610,8 +3003,22 @@ el('lql-gen-btn').addEventListener('click', async () => {
     const resultsEl = document.createElement('div');
     resultsEl.className = 'lql-result-body';
 
+    // Show the actual generated LQL — collapsed by default, but the query itself must always
+    // be visible somewhere. It was previously captured (_genQueryText) and used to run the
+    // query but never rendered anywhere in the UI.
+    if (_genQueryText) {
+      const details = document.createElement('details');
+      details.className = 'lql-query-preview';
+      const summary = document.createElement('summary');
+      summary.textContent = '▶ Generated LQL';
+      const pre = document.createElement('pre');
+      pre.textContent = _genQueryText;
+      details.append(summary, pre);
+      resultsEl.appendChild(details);
+    }
+
     if (!rows.length) {
-      resultsEl.innerHTML = '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
+      resultsEl.innerHTML += '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
       appendResultCard('📊', `LQL: ${label}`, resultsEl);
       return;
     }
@@ -2624,9 +3031,10 @@ el('lql-gen-btn').addEventListener('click', async () => {
     // Extract regions from row data for regulatory context
     const regionKeys = keys.filter(k => /region/i.test(k));
     const lqlRegions = [...new Set(rows.flatMap(r => regionKeys.map(k => r[k])).filter(Boolean))];
+    if (guardBusy()) return;
     history.push({
       role: 'user',
-      content: `Security finding data from LQL query "${label}" — ${count} rows:\n\n${sample}${formatApiEnrichment(data.api_enrichment)}\n\n${EXEC_REPORT_TEMPLATE}${_regulatoryContext(lqlRegions)}`,
+      content: `Security finding data from LQL query "${label}" — ${count} rows:\n\n${sample}${formatApiEnrichment(data.api_enrichment)}\n\n${buildReportInstructions()}${_regulatoryContext(lqlRegions)}`,
     });
     send(true);
   } catch (e) {
@@ -2636,6 +3044,7 @@ el('lql-gen-btn').addEventListener('click', async () => {
     _startLqlScopingConversation(objective, e.message);
   } finally {
     btn.disabled = false;
+    stopDogPoop(dogEl, runnerEl, trailEl);
   }
 });
 
@@ -2733,28 +3142,3 @@ function renderLqlTable(containerEl, rows, totalRows, queryLabel) {
 el('lql-objective').addEventListener('keydown', e => {
   if (e.key === 'Enter') el('lql-gen-btn').click();
 });
-
-
-async function loadCompliancePdfText(reportName) {
-  appendTurn('system', `📖 Loading "${reportName}" into context…`);
-  try {
-    const res  = await fetch(BASE_URL + '/compliance/latest-text');
-    const data = await res.json();
-    if (data.error) throw new Error(data.error);
-
-    if (data.text) {
-      const MAX = 40000;
-      const text = data.text.length > MAX
-        ? data.text.slice(0, MAX) + `\n\n[Truncated — ${data.text.length} chars total]`
-        : data.text;
-      history.push({ role: 'user', content: `Here is the content of the compliance report "${data.name}":\n\n${text}\n\nAsk me anything about this report.` });
-      appendTurn('system', `✓ "${data.name}" loaded (${text.length.toLocaleString()} chars) — ask your questions below.`);
-    } else {
-      appendTurn('system', data.note
-        ? `⚠ ${data.note}`
-        : `⚠ PDF text extraction returned empty — the server may need to be restarted. Run: kill $(lsof -ti:45321) && python3 serve.py`);
-    }
-  } catch (e) {
-    appendTurn('system', `PDF load error: ${e.message}`);
-  }
-}
