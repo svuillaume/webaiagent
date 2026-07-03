@@ -713,6 +713,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             hints.append(f'Active regions in inventory: {", ".join(sorted(regions)[:12])}')
         return '\n'.join(hints)
 
+    def _inventory_keyword_search(self, token, base_url, term, csp='AWS'):
+        """Pattern-match a keyword (e.g. a named app/software) against resourceConfig
+        across ALL resource types via the REST Inventory API — covers Lambda function
+        names, ECS task defs/images, EC2 tags/names, EKS, etc. that no single LQL
+        datasource models. Complements (not replaces) LQL's structural queries."""
+        now   = datetime.now(timezone.utc)
+        start = (now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
+        items = self._call_lw_api(token, base_url, '/api/v2/Inventory/search', {
+            'timeFilter': {'startTime': start, 'endTime': end},
+            'csp': csp,
+            'filters': [{'field': 'resourceConfig', 'expression': 'rlike', 'value': f'.*{term}.*'}],
+            'returns': ['urn', 'resourceType', 'resourceRegion', 'csp', 'service', 'resourceConfig'],
+        })
+        return items or []
+
     def _enrich_lql_with_api(self, token, base_url, query_text, rows):
         """
         Enrich LQL results with correlated FortiCNAPP REST API v2 data.
@@ -1651,9 +1667,21 @@ IAM entitlements unused for 90+ days (sec_to_timestamp with hardcoded epoch — 
 Access key 1 not rotated in 90 days (sec_to_timestamp with hardcoded epoch):
 {"queryId":"Custom_AWS_IAM_AccessKey1NotRotated90Days","queryText":"{ source { LW_CFG_AWS_IAM_USERS_GET_CREDENTIAL_REPORT } filter { RESOURCE_CONFIG:access_key_1_active = 'true' AND RESOURCE_CONFIG:access_key_1_last_rotated < sec_to_timestamp(1742860800) } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, ARN as RESOURCE_KEY, RESOURCE_REGION, RESOURCE_TYPE, SERVICE, RESOURCE_CONFIG:access_key_1_last_rotated::String as LAST_ROTATED, 'Access key 1 not rotated in 90 days' as COMPLIANCE_FAILURE_REASON } }"}
 
+━━ REST API FALLBACK (searchTerm) ━━
+LQL only covers resource types Lacework has modeled as datasources (see lists above). Many objectives
+name a specific piece of software, application, or service (e.g. "MCP servers", "nginx", "Jenkins",
+a custom app name) that has NO dedicated LQL datasource — it can only be found by pattern-matching
+resource names/configs, which the FortiCNAPP REST API's Inventory search supports but LQL does not.
+When the objective names software/technology like this, ALSO include a "searchTerm" field: a short
+lowercase keyword (e.g. "mcp") that the backend will use to search resourceConfig across ALL AWS
+resources (Lambda function names, ECS task defs/images, EC2 tags/names, EKS, etc.) via the REST
+Inventory API — this broadens coverage beyond whatever single LQL datasource you pick.
+Omit "searchTerm" entirely when the objective is about a native modeled resource type (S3, IAM, EC2
+config, etc.) where LQL alone already gives complete coverage.
+
 ━━ OUTPUT FORMAT ━━
 Respond with ONLY a valid JSON object — no markdown, no code fences, no explanation:
-{"queryId": "Custom_<Cloud>_<Service>_<PascalCaseDescription>", "queryText": "{ source { ... } filter { ... } return distinct { ... } }"}"""
+{"queryId": "Custom_<Cloud>_<Service>_<PascalCaseDescription>", "queryText": "{ source { ... } filter { ... } return distinct { ... } }", "searchTerm": "<optional short keyword — omit if not applicable>"}"""
 
         if _schema_hints:
             system_prompt += f'\n\n━━ LIVE TENANT CONTEXT ━━\n{_schema_hints}'
@@ -1683,7 +1711,11 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             brace = raw.find('{')
             if brace > 0:
                 raw = raw[brace:]
-            return json.loads(raw)
+            # Parse only the first JSON object — models sometimes append trailing
+            # commentary or a duplicate object after the closing brace, which
+            # would otherwise raise "Extra data" from a strict json.loads().
+            obj, _ = json.JSONDecoder().raw_decode(raw)
+            return obj
 
         def _validate_lql(query_text):
             """Validate query syntax only. Returns error string or None if valid."""
@@ -1743,19 +1775,39 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             finally:
                 os.unlink(tmp.name)
 
+        def _call_claude_retryable(msgs):
+            """Call Claude and parse its JSON reply. Never raises — returns
+            (result, None) on success or (None, error_str) if the reply wasn't
+            parseable JSON, so a malformed model reply is a retryable condition
+            instead of an unhandled exception that aborts the whole request."""
+            try:
+                return _call_claude(msgs), None
+            except (json.JSONDecodeError, ValueError) as e:
+                return None, f'Model reply was not valid JSON: {e}'
+
         try:
             messages = [{'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'}]
-            result = _call_claude(messages)
+            result, last_err = _call_claude_retryable(messages)
 
             # validate-then-fix loop — validate syntax first (fast), then run for real.
             # Each iteration: if an error occurs and retries remain, feed the error back to
             # Claude and loop again with the corrected query. On the final attempt any
             # remaining error is stored in last_err and surfaced to the caller.
-            MAX_RETRIES = 9
+            MAX_RETRIES = 20
             cached_rows = None
-            last_err    = None
             print(f'  [LQL] objective: {objective!r}')
             for attempt in range(MAX_RETRIES):
+                if result is None:
+                    print(f'  [LQL] attempt {attempt+1}/{MAX_RETRIES} — ✗ parse error: {last_err}')
+                    if attempt < MAX_RETRIES - 1:
+                        messages.append({'role': 'user', 'content': (
+                            f'Your last reply could not be parsed as JSON:\n{last_err}\n\n'
+                            'Respond with ONLY the JSON object — no markdown, no commentary before or after it.'
+                        )})
+                        print(f'  [LQL]   → asking Claude to retry (attempt {attempt+2})')
+                        result, last_err = _call_claude_retryable(messages)
+                    continue
+
                 query_text = result.get('queryText', '')
                 if not query_text or result.get('queryId') == 'USE_CVE_TAB':
                     break
@@ -1778,7 +1830,7 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                             'Fix the LQL and return only the corrected JSON object.'
                         )})
                         print(f'  [LQL]   → asking Claude to fix (attempt {attempt+2})')
-                        result = _call_claude(messages)
+                        result, last_err = _call_claude_retryable(messages)
                     continue  # re-enter loop with corrected result (or exit on final attempt)
 
                 print(f'  [LQL]   ✓ validation passed — running…')
@@ -1808,10 +1860,10 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                         'Fix the LQL and return only the corrected JSON object.'
                     )})
                     print(f'  [LQL]   → asking Claude to fix (attempt {attempt+2})')
-                    result = _call_claude(messages)
+                    result, last_err = _call_claude_retryable(messages)
 
             # If all retries exhausted with an error, surface it rather than returning empty
-            if last_err and cached_rows is None and result.get('queryId') != 'USE_CVE_TAB':
+            if last_err and cached_rows is None and (result or {}).get('queryId') != 'USE_CVE_TAB':
                 print(f'  [LQL] ✗ gave up after {MAX_RETRIES} attempts — {last_err}')
                 self.send_json(500, json.dumps({'error': f'LQL still failing after {MAX_RETRIES} attempts — last error: {last_err}'}).encode())
                 return
@@ -1831,6 +1883,26 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                             result['api_enrichment'] = enrichment
                     except Exception:
                         pass  # enrichment is best-effort — never fail the response
+
+            # searchTerm fallback: LQL only covers resource types Lacework has modeled as
+            # datasources. When Claude names a specific software/app not covered by any
+            # datasource, broaden the search via the REST Inventory API (rlike over
+            # resourceConfig — catches Lambda function names, ECS task defs/images, EC2
+            # tags, etc.) and merge alongside any LQL rows so the caller sees both.
+            search_term = (result.get('searchTerm') or '').strip().lower()
+            if search_term and _lw_token_data:
+                try:
+                    hits = self._inventory_keyword_search(*_lw_token_data, search_term)
+                    if hits:
+                        enrichment = result.setdefault('api_enrichment', {})
+                        enrichment['inventory_keyword_search'] = {
+                            'count':       len(hits),
+                            'description': f'AWS resources matching "{search_term}" via REST Inventory API '
+                                           f'(broader than LQL — covers all resource types, not just LQL-modeled ones)',
+                            'items':       hits[:20],
+                        }
+                except Exception:
+                    pass  # best-effort — never fail the response
 
             # Cache only queryId+queryText — skip rows to keep endpoint cache small
             if result.get('queryText') and result.get('queryId') != 'USE_CVE_TAB':
