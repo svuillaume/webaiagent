@@ -21,13 +21,15 @@
   --accent:     #ee3124;
   --accent-d:   #c41230;
   --accent-bg:  rgba(238,49,36,.08);
-  --ok:         #34d399;
-  --ok-bg:      rgba(52,211,153,.08);
+  --ok:         #3cb17e; /* Fortinet Green — PMS 7724 C */
+  --ok-bg:      rgba(60,177,126,.1);
   --warn:       #fbbf24;
   --err:        #f87171;
   --err-bg:     rgba(248,113,113,.08);
   --blue:       #60a5fa;
   --blue-bg:    rgba(96,165,250,.08);
+  --purple:     #9063cd; /* Fortinet Purple — PMS 265 C */
+  --purple-bg:  rgba(144,99,205,.1);
 }
 
 @media (prefers-color-scheme: light) {
@@ -43,13 +45,15 @@
     --accent:     #ee3124;
     --accent-d:   #c41230;
     --accent-bg:  rgba(238,49,36,.06);
-    --ok:         #059669;
-    --ok-bg:      rgba(5,150,105,.06);
+    --ok:         #3cb17e; /* Fortinet Green — PMS 7724 C */
+    --ok-bg:      rgba(60,177,126,.08);
     --warn:       #d97706;
     --err:        #dc2626;
     --err-bg:     rgba(220,38,38,.06);
     --blue:       #2563eb;
     --blue-bg:    rgba(37,99,235,.06);
+    --purple:     #9063cd; /* Fortinet Purple — PMS 265 C */
+    --purple-bg:  rgba(144,99,205,.08);
   }
 }
 
@@ -885,12 +889,15 @@ body {
 .turn-user .content {
   border-left-color: var(--accent);
 }
-/* AI content keeps its light card + report color language untouched (feeds PDF export styling) */
+/* AI content keeps its light card + report color language for PDF export consistency, but now
+   carries a Fortinet Purple accent bar — the "AI box" brand marker. */
 .turn-ai .content {
-  border-left: none;
+  border-left: 3px solid var(--purple);
   background: #f8f9fa;
   color: #111111;
-  border: 1px solid #d0d5dd;
+  border-top: 1px solid #d0d5dd;
+  border-right: 1px solid #d0d5dd;
+  border-bottom: 1px solid #d0d5dd;
   border-radius: 6px;
   padding: 9px 12px;
 }
@@ -918,7 +925,7 @@ body {
   user-select: none;
 }
 .turn-user .turn-label  { color: var(--accent); }
-.turn-ai   .turn-label  { color: var(--muted); }
+.turn-ai   .turn-label  { color: var(--purple); }
 
 /* ── Content wrapper ── */
 .bubble-col {
@@ -938,7 +945,7 @@ body {
 }
 .turn-ai .content code {
   background: #e8edf2;
-  color: #003366;
+  color: var(--purple);
   border: 1px solid #c8d0da;
 }
 .content pre {
@@ -980,8 +987,8 @@ a.ext-link:hover { color: var(--accent-d); }
 .turn-ai .content h2.md-h,
 .turn-ai .content h3.md-h,
 .turn-ai .content h4.md-h { border-bottom-color: #d0d5dd; }
-.turn-ai .content h2.md-h { font-size: 15px;   letter-spacing: .2px; color: #003366; }
-.turn-ai .content h3.md-h { font-size: 13.5px; color: #003366; border-bottom: none; margin-bottom: 2px; }
+.turn-ai .content h2.md-h { font-size: 15px;   letter-spacing: .2px; color: var(--purple); }
+.turn-ai .content h3.md-h { font-size: 13.5px; color: var(--purple); border-bottom: none; margin-bottom: 2px; }
 .turn-ai .content h4.md-h { font-size: 13px;   color: #444444; border-bottom: none; font-weight: 600; }
 .turn-ai .content p  { margin: 3px 0; color: #111111; }
 .turn-ai .content br { display: block; margin: 4px 0; content: ''; }
@@ -1009,7 +1016,7 @@ a.ext-link:hover { color: var(--accent-d); }
   font-size: 12.5px;
 }
 .turn-ai .content th {
-  background: #003366;
+  background: var(--purple);
   color: #ffffff;
   font-weight: 700;
   text-align: left;
@@ -1082,7 +1089,7 @@ a.ext-link:hover { color: var(--accent-d); }
   font-size: 11px;
 }
 .fg-search-link a {
-  color: #003366;
+  color: var(--purple);
   font-weight: 600;
   text-decoration: none;
 }
@@ -1100,7 +1107,7 @@ a.ext-link:hover { color: var(--accent-d); }
 }
 .fg-outbreak-card strong { color: #cc0000; display: block; margin-bottom: 4px; }
 .fg-outbreak-item { margin: 3px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.fg-outbreak-item a { color: #003366; text-decoration: none; font-weight: 600; }
+.fg-outbreak-item a { color: var(--purple); text-decoration: none; font-weight: 600; }
 .fg-outbreak-item a:hover { text-decoration: underline; }
 .fg-risk { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
 .fg-risk-critical { background: #cc0000; color: #fff; }
@@ -1263,12 +1270,12 @@ a.ext-link:hover { color: var(--accent-d); }
   align-self: flex-start;
 }
 .rc-pdf-btn {
-  background: #003366 !important;
+  background: var(--purple) !important;
   color: #fff !important;
-  border-color: #003366 !important;
+  border-color: var(--purple) !important;
 }
 .rc-pdf-btn:hover {
-  background: #004499 !important;
+  background: #7c4fc0 !important;
   color: #fff !important;
 }
 .cs-result-body, .cve-result-body, .lql-result-body {
@@ -1456,7 +1463,7 @@ a.ext-link:hover { color: var(--accent-d); }
       <button id="sbom" class="fcnapp-item accent" title="Generate SBOM — choose format before generating"> SBOM Gen</button>
       <button id="compliance" class="fcnapp-item success" title="Generate compliance PDF report"> Compliance Report</button>
       <button id="lql"        class="fcnapp-item accent"  title="Run LQL queries against your tenant"> Advanced Analytics</button>
-      <button id="cve-btn"    class="fcnapp-item danger"  title="CVE attack surface across hosts &amp; containers"> Enriched Attack Threat Surface</button>
+      <button id="cve-btn"    class="fcnapp-item danger"  title="CVE attack surface across hosts &amp; containers"> Unified Attack Threat Surface</button>
     </div>
   </div>
   <button id="faz-btn" class="chip lw-disabled" title="FortiAnalyzer — coming soon. Correlated SOC analytics across the Security Fabric.">📈 FAZ</button>
@@ -1513,7 +1520,7 @@ a.ext-link:hover { color: var(--accent-d); }
 
 <div id="cve-panel" class="drawer">
   <div class="drawer-header">
-    <span>🚨 Enriched Attack Threat Surface</span>
+    <span>🚨 Unified Attack Threat Surface</span>
     <span class="drawer-close" id="cve-close">✕</span>
   </div>
   <div class="drawer-body">

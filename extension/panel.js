@@ -210,13 +210,13 @@ And if you're a **FortiCNAPP** customer, I can plug directly into your environme
 
 Here's what I can help with:
 
-• 📄 **Read** / **TL;DR** — pull this page into context, or get a quick plain-English summary
-• 🖱 **Select text → right-click → "Ask AI about selection"** — works on any page, even PDFs
-• 🛡 **Scan Code** — SCA + SAST on code from this page or a GitHub repo
+• 📄 **Read** / **TL;DR** — pull this page into context, or get a quick plain-English summary · [example](https://github.com/svuillaume/webaiagent#what-does-it-do)
+• 🖱 **Select text → right-click → "Ask AI about selection"** — works on any page, even PDFs · [example](https://github.com/svuillaume/webaiagent#what-does-it-do)
+• 🛡 **Scan Code** — SCA + SAST on code from this page or a GitHub repo · [example](https://github.com/svuillaume/webaiagent#features)
   - SAST: Go · Java · JavaScript · PHP · Python · TypeScript
   - SCA: .NET · C/C++ · Go · Java · Node.js · PHP · Python · Ruby · Rust
-• 🔰 **FortiCNAPP** — Compliance, AI Assist, and Attack Surface analysis (Scan Code lives in this menu too)
-• ⚙ **Admin** — swap AI gateway, model, or the TokenIQ compression proxy any time
+• 🔰 **FortiCNAPP** — Compliance, AI Assist, and Attack Surface analysis (Scan Code lives in this menu too) · [walkthrough](https://github.com/svuillaume/webaiagent#end-to-end-workflow)
+• ⚙ **Admin** — swap AI gateway, model, or the TokenIQ compression proxy any time · [details](https://github.com/svuillaume/webaiagent#environment-variables-env)
 
 Ask me anything, or pick a tool above to get started.`);
 }
@@ -498,7 +498,7 @@ function makePdfBtn(getSourceEl) {
 
     // Remap known classes to inline styles so the print window is self-contained
     const styleMap = {
-      'md-h':         'font-family:Arial,sans-serif;font-weight:700;color:#003366;margin:16px 0 5px;padding-bottom:3px;border-bottom:1px solid #ccc;',
+      'md-h':         'font-family:Arial,sans-serif;font-weight:700;color:#9063cd;margin:16px 0 5px;padding-bottom:3px;border-bottom:1px solid #ccc;',
       'fg-outbreak-card': 'margin:8px 0;padding:7px 10px;border:1px solid #cc0000;border-left:3px solid #cc0000;border-radius:4px;background:#fff5f5;font-size:12px;',
       'fg-search-link':   'margin-top:6px;font-size:11px;',
       'fg-outbreak-item': 'margin:3px 0;',
@@ -539,19 +539,19 @@ function makePdfBtn(getSourceEl) {
 <style>
   * { box-sizing: border-box; }
   body { font-family: Arial, sans-serif; font-size: 13px; color: #111; max-width: 860px; margin: 40px auto; padding: 0 24px; line-height: 1.6; }
-  h2, h3, h4 { font-family: Arial, sans-serif; font-weight: 700; color: #003366; margin: 18px 0 6px; padding-bottom: 3px; border-bottom: 1px solid #ddd; }
+  h2, h3, h4 { font-family: Arial, sans-serif; font-weight: 700; color: #9063cd; margin: 18px 0 6px; padding-bottom: 3px; border-bottom: 1px solid #ddd; }
   p { margin: 6px 0; }
   ul, ol { margin: 6px 0 6px 20px; padding: 0; }
   li { margin: 3px 0; }
   table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 12px; }
-  th { background: #003366; color: #fff; padding: 6px 10px; text-align: left; border: 1px solid #aaa; }
+  th { background: #9063cd; color: #fff; padding: 6px 10px; text-align: left; border: 1px solid #aaa; }
   td { padding: 5px 10px; border: 1px solid #ccc; vertical-align: top; }
-  tr:nth-child(even) td { background: #f4f7fb; }
-  pre { background: #f4f4f4; border: 1px solid #ddd; border-left: 3px solid #003366; padding: 10px 12px; border-radius: 4px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; overflow: visible; }
+  tr:nth-child(even) td { background: #f6f2fb; }
+  pre { background: #f4f4f4; border: 1px solid #ddd; border-left: 3px solid #9063cd; padding: 10px 12px; border-radius: 4px; font-size: 11.5px; white-space: pre-wrap; word-break: break-all; overflow: visible; }
   code { background: #f0f0f0; border: 1px solid #ddd; padding: 1px 4px; border-radius: 3px; font-size: 11.5px; }
   blockquote { border-left: 3px solid #cc0000; margin: 8px 0; padding: 4px 12px; color: #555; background: #fff5f5; }
   hr { border: none; border-top: 1px solid #ccc; margin: 16px 0; }
-  a { color: #003366; word-break: break-all; }
+  a { color: #9063cd; word-break: break-all; }
   strong { color: #111; }
   @media print {
     body { margin: 16px; font-size: 11px; }
@@ -1874,7 +1874,7 @@ el('cve-btn').addEventListener('click', () => {
   el('codesec-panel').classList.remove('open');
   el('compliance-panel').classList.remove('open');
   el('lql-panel').classList.remove('open');
-  if (!isOpen) { startNewSession('Enriched Attack Threat Surface'); el('cve-input').focus(); }
+  if (!isOpen) { startNewSession('Unified Attack Threat Surface'); el('cve-input').focus(); }
 });
 
 el('cve-close').addEventListener('click', () => el('cve-panel').classList.remove('open'));
@@ -2008,7 +2008,7 @@ function _regulatoryContext(regions = []) {
 }
 
 // Shared incident-report template for FortiCNAPP Advanced Analytics (LQL) and
-// Enriched Attack Threat Surface (CVE) reports. This OVERRIDES the system prompt's
+// Unified Attack Threat Surface (CVE) reports. This OVERRIDES the system prompt's
 // default Objective/Findings/Fix structure per its own precedence rule.
 const INCIDENT_REPORT_TEMPLATE = `Use EXACTLY this Markdown template. Fill every placeholder from the data provided below; omit
 a whole section if it doesn't apply (e.g. no "Compliance Deadlines" section when no regulated
