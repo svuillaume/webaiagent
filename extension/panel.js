@@ -839,26 +839,15 @@ el('tldr').addEventListener('click', () => withPage('tldr', async page => {
   history.push({ role: 'user',      content: pageCtx(page) });
   history.push({ role: 'assistant', content: 'Page loaded.' });
   history.push({ role: 'user',      content:
-    'TL;DR this page. Identify each distinct topic it covers — a product, concept, or (for a changelog / ' +
-    'release-notes page) each separate month or version — and give each its own breakout (skip this ' +
-    'structure entirely and just answer normally if the page is a single narrow topic with nothing to ' +
-    'break out). For EACH topic, use this exact structure:\n\n' +
-    '### <topic name>\n' +
-    '- **What it is** — one line\n' +
-    '- **Why it matters** — one line\n' +
-    '- **2 key benefits:**\n' +
-    '  1. <first major benefit>\n' +
-    '  2. <second major benefit>\n\n' +
-    'The 2 benefits are REQUIRED for every topic — never leave them blank. Ground them in specifics actually ' +
-    'on the page (a named feature, a fixed issue, a stated metric) — for a release/changelog entry, phrase them ' +
-    'as benefits of adopting that specific release, not generic praise. If the page truly has nothing concrete ' +
-    'to support a benefit, write the most defensible inference instead of leaving the line empty. ' +
-    'If the topic is naturally comparable to an alternative tool/feed/approach (e.g. a vendor-native feature vs. ' +
-    'a third-party or bolt-on equivalent), let "Why it matters" reflect that differentiation — but only the kind ' +
-    'you can defend from what is actually on the page (integration depth, what it is wired into, what it replaces). ' +
-    'Never invent comparative claims you cannot support, like unverified "larger" or "better" dataset/coverage claims. ' +
-    'End each topic with a markdown link to the most relevant source URL. Keep every line tight — no filler, no repeating the page title. ' +
-    'Start your reply with the first "### <topic name>" line — no preamble, no "Here is the TL;DR" or similar opener, ' +
+    'Summarize this page. Read the actual content and compress it to the shortest form that keeps every ' +
+    'material fact and its meaning intact — no filler, no restating the page title, nothing padded out for ' +
+    'the sake of structure. One fact or claim per bullet. ' +
+    'If the page covers multiple distinct topics (or, for a changelog/release-notes page, multiple months or ' +
+    'versions), group bullets under a short "### <topic>" heading per group — otherwise just a flat bullet list, ' +
+    'no headings needed for a single narrow topic. ' +
+    'Always cite sources: end each bullet, or each topic group, with a markdown link to the most relevant URL ' +
+    'actually on the page — never omit this, never invent a URL. ' +
+    'Start directly with the first bullet or heading — no preamble, no "Here is the summary" or similar opener, ' +
     'not even if you look something up mid-answer and resume afterward.' });
   appendTurn('system', `📄 TL;DR — "${page.title}"`);
   el('read-page').classList.add('active');
