@@ -2839,77 +2839,72 @@ function _startLqlScopingConversation(objective, errorMsg) {
   });
 }
 
-// A cute dog runs laps around the whole panel and randomly leaves a 💩 behind while LQL
-// generation/validation/REST-enrichment is in flight; a runner sprints after each one to scoop
-// it up. Pure fun, no functional role.
-let _dogMoveTimer = null, _runnerTimer = null;
-let _poopTrail = [];   // { el, x, y } queued oldest-first — runner always chases index 0
-let _runnerBusy = false;
+// A little sailboat sails slow, randomly-sized circles around the whole panel — via CSS Motion
+// Path (offset-path), not point-to-point jumps, so it actually traces a curved course — leaving
+// a brief fading wake behind it while LQL generation/validation/REST-enrichment is in flight.
+// Pure fun, no functional role.
+let _boatCircleTimeout = null, _wakeTimer = null, _sailFlipTimeout = null;
+let _currentCircle = null; // { cx, cy, r, duration, start } — used to compute wake positions
 
-function startDogPoop(dogEl, runnerEl, trailEl) {
-  const margin = 10, size = 46;
-  let lastX = 20, lastY = 60;
+function startSailing(boatEl, trailEl) {
+  boatEl.style.display = 'inline-block';
+  boatEl.style.setProperty('--dir', 1);
 
-  dogEl.style.display = 'inline-block';
-  dogEl.style.left = `${lastX}px`;
-  dogEl.style.top  = `${lastY}px`;
-
-  const nextDogMove = () => {
-    const maxX = Math.max(margin, window.innerWidth  - size - margin);
-    const maxY = Math.max(margin, window.innerHeight - size - margin);
-    const x = margin + Math.random() * (maxX - margin);
-    const y = margin + Math.random() * (maxY - margin);
-
-    if (Math.random() < 0.4) {
-      const poop = document.createElement('span');
-      poop.className = 'lql-poop';
-      poop.textContent = '💩';
-      const px = lastX + 14, py = lastY + 22;
-      poop.style.left = `${px}px`;
-      poop.style.top  = `${py}px`;
-      trailEl.appendChild(poop);
-      _poopTrail.push({ el: poop, x: px, y: py });
-    }
-
-    dogEl.style.setProperty('--dir', x < lastX ? -1 : 1);
-    dogEl.style.left = `${x}px`;
-    dogEl.style.top  = `${y}px`;
-    lastX = x; lastY = y;
+  // Crossing winds — flip the sail to the other side on an irregular timer, independent of
+  // travel direction (the boat itself no longer turns to face where it's going).
+  const scheduleFlip = () => {
+    _sailFlipTimeout = setTimeout(() => {
+      const cur = boatEl.style.getPropertyValue('--dir').trim();
+      boatEl.style.setProperty('--dir', cur === '-1' ? 1 : -1);
+      scheduleFlip();
+    }, 2500 + Math.random() * 3500); // every 2.5–6s
   };
-  nextDogMove();
-  _dogMoveTimer = setInterval(nextDogMove, 900); // was 1600ms — felt sluggish; matches the snappier CSS transition speed
+  scheduleFlip();
 
-  runnerEl.style.display = 'inline-block';
-  runnerEl.style.left = '-40px';
-  runnerEl.style.top  = '-40px';
-
-  const chaseNext = () => {
-    if (_runnerBusy || !_poopTrail.length) return;
-    const target = _poopTrail[0];
-    _runnerBusy = true;
-    const curLeft = parseFloat(runnerEl.style.left) || 0;
-    runnerEl.style.setProperty('--dir', target.x < curLeft ? -1 : 1);
-    runnerEl.style.left = `${target.x - 10}px`;
-    runnerEl.style.top  = `${target.y - 6}px`;
-    setTimeout(() => {
-      target.el.classList.add('scooped');
-      setTimeout(() => {
-        target.el.remove();
-        _poopTrail.shift();
-        _runnerBusy = false;
-      }, 220);
-    }, 300); // matches the .28s left/top transition on .lql-runner
+  const pickCircle = () => {
+    const r      = 40 + Math.random() * 90;              // random size: 40–130px radius
+    const margin = 15;
+    const spanX  = Math.max(10, window.innerWidth  - 2 * (margin + r));
+    const spanY  = Math.max(10, window.innerHeight - 2 * (margin + r));
+    const cx     = margin + r + Math.random() * spanX;
+    const cy     = margin + r + Math.random() * spanY;
+    const duration = 10 + Math.random() * 8;             // slow: 10–18s per full lap
+    boatEl.style.offsetPath = `circle(${r.toFixed(1)}px at ${cx.toFixed(1)}px ${cy.toFixed(1)}px)`;
+    boatEl.style.animationDuration = `2.2s, ${duration}s`; // [boat-rock, boat-sail], must match declaration order
+    return { cx, cy, r, duration, start: Date.now() };
   };
-  _runnerTimer = setInterval(chaseNext, 350); // was 600ms — checks/chases much more eagerly now
+
+  const scheduleNext = () => {
+    _currentCircle = pickCircle();
+    _boatCircleTimeout = setTimeout(scheduleNext, _currentCircle.duration * 1000);
+  };
+  scheduleNext();
+
+  // Drop a wake ripple at the boat's current point on its circle — computed from elapsed time
+  // rather than tracked via transition events, since offset-path motion isn't driven by JS.
+  _wakeTimer = setInterval(() => {
+    if (!_currentCircle) return;
+    const { cx, cy, r, duration, start } = _currentCircle;
+    const elapsed = ((Date.now() - start) / 1000) % duration;
+    const angle   = (elapsed / duration) * 2 * Math.PI;
+    const wx = cx + r * Math.cos(angle);
+    const wy = cy + r * Math.sin(angle);
+
+    const wake = document.createElement('span');
+    wake.className = 'lql-wake';
+    wake.textContent = '〰️';
+    wake.style.left = `${wx.toFixed(1)}px`;
+    wake.style.top  = `${(wy + 14).toFixed(1)}px`;
+    trailEl.appendChild(wake);
+    setTimeout(() => wake.remove(), 1700);
+  }, 900);
 }
-function stopDogPoop(dogEl, runnerEl, trailEl) {
-  clearInterval(_dogMoveTimer);
-  clearInterval(_runnerTimer);
-  dogEl.style.display    = 'none';
-  runnerEl.style.display = 'none';
-  _poopTrail.forEach(p => p.el.remove());
-  _poopTrail = [];
-  _runnerBusy = false;
+function stopSailing(boatEl, trailEl) {
+  clearTimeout(_boatCircleTimeout);
+  clearInterval(_wakeTimer);
+  clearTimeout(_sailFlipTimeout);
+  _currentCircle = null;
+  boatEl.style.display = 'none';
   trailEl.innerHTML = '';
 }
 
@@ -2919,14 +2914,13 @@ el('lql-gen-btn').addEventListener('click', async () => {
 
   const btn      = el('lql-gen-btn');
   const statusEl = el('lql-gen-status');
-  const dogEl    = el('lql-gen-dog');
-  const runnerEl = el('lql-gen-runner');
-  const trailEl  = el('lql-gen-poop-trail');
+  const boatEl   = el('lql-gen-boat');
+  const trailEl  = el('lql-gen-wake-trail');
 
   btn.disabled         = true;
   statusEl.textContent = 'running…';
   statusEl.className   = '';
-  startDogPoop(dogEl, runnerEl, trailEl);
+  startSailing(boatEl, trailEl);
   _genQueryText        = '';
   el('lql-gen-results').innerHTML = '';
 
@@ -3033,7 +3027,7 @@ el('lql-gen-btn').addEventListener('click', async () => {
     _startLqlScopingConversation(objective, e.message);
   } finally {
     btn.disabled = false;
-    stopDogPoop(dogEl, runnerEl, trailEl);
+    stopSailing(boatEl, trailEl);
   }
 });
 

@@ -135,20 +135,125 @@ def _load_lql_reference_chunks():
             _lql_reference_chunks.append((name, body))
     return _lql_reference_chunks
 
+_lw_datasource_catalog = None  # lazy-loaded cache: list of {name, description, resultSchema, ...}
+_LW_CATALOG_TIMEOUT = 45
+
+def _load_lw_datasource_catalog():
+    """Live, authoritative datasource catalog via `lacework query list-sources --json` — every
+    real datasource name, description, and full per-field resultSchema for this tenant's actual
+    Lacework version. This replaced an earlier approach that parsed the static reference-doc text
+    file (a PDF-to-text dump): that file truncates ~29% of long datasource names mid-word from
+    column-width cutoff during extraction (e.g. "LW_CFG_AWS_IAM_ACCOUNT_PASSWORD_" — the real name
+    is ...PASSWORD_POLICY, unrecoverable from the text), and has no parseable per-field schema for
+    the ~1400 LW_CFG_* AWS/Azure/GCP/OCI resource-config datasources at all. The CLI has both,
+    complete and current. Cached once per process — the catalog doesn't change during a run."""
+    global _lw_datasource_catalog
+    if _lw_datasource_catalog is not None:
+        return _lw_datasource_catalog
+    _lw_datasource_catalog = []
+    if not shutil.which('lacework'):
+        return _lw_datasource_catalog
+    try:
+        cmd = ['lacework', 'query', 'list-sources', '--json']
+        if LW_PROFILE:
+            cmd += ['--profile', LW_PROFILE]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=_LW_CATALOG_TIMEOUT)
+        if r.returncode == 0 and r.stdout.strip():
+            _lw_datasource_catalog = json.loads(r.stdout)
+    except Exception:
+        pass
+    return _lw_datasource_catalog
+
+def _all_lql_datasources_text() -> str:
+    """Every real datasource name + one-line description, unconditionally — not keyword-filtered.
+    Falls back to the static text file's flat catalog (also unfiltered) if the live CLI is
+    unavailable. Deliberately large (~2300 entries, live; fewer if falling back): the two grounding
+    bugs found this session (hosts with no Region tag, IAM privilege objectives misrouted to the CVE
+    tab) both came from the model working from an incomplete picture. Passing the full catalog on
+    every /lql/generate call trades tokens for correctness on purpose — this endpoint already
+    tolerates multi-second latency and up to 9 retries, so token cost is the right thing to spend
+    here, not the thing to protect."""
+    catalog = _load_lw_datasource_catalog()
+    if catalog:
+        lines = sorted(f"{d['name']}: {d.get('description', '')}" for d in catalog if d.get('name'))
+        return '\n'.join(lines)
+    return _all_lql_datasources_text_fallback()
+
 _LQL_RETRIEVAL_STOPWORDS = {
     'the', 'a', 'an', 'of', 'in', 'on', 'for', 'with', 'and', 'or', 'to', 'is', 'are', 'that',
     'this', 'find', 'list', 'show', 'get', 'all', 'any', 'has', 'have', 'not', 'without',
 }
 
-_LQL_RETRIEVAL_MIN_SCORE = 5.0  # below this, treat as no real match (avoids injecting noise for
-                                 # objectives about datasources this doc doesn't catalog per-section,
-                                 # e.g. LW_CFG_* AWS resource types — a raw name match alone clears this)
+_LQL_RETRIEVAL_MIN_SCORE = 5.0  # below this, treat as no real match
 
-def _retrieve_lql_reference(objective: str, max_chunks: int = 3, max_chars: int = 5000) -> str:
-    """Keyword-overlap ranked excerpts from the LQL reference doc relevant to this objective.
-    Score = heavily-weighted name match + length-normalized keyword density in the body — raw counts
-    alone would let the two unbounded end-of-file chunks (CloudTrailRawEvents, LW_ACT_GCP_ACTIVITY —
-    both huge, no next-header boundary to cap them) win almost every query purely by sheer volume."""
+def _datasource_field_schema_text(entry) -> str:
+    """One live-catalog datasource formatted as 'FIELD (dataType) — description' lines."""
+    lines = [f"{entry['name']} — {entry.get('description', '')}"]
+    for f in (entry.get('resultSchema') or []):
+        lines.append(f"  {f.get('name', '')} ({f.get('dataType', '')}) — {f.get('description', '')}")
+    return '\n'.join(lines)
+
+def _retrieve_lql_reference(objective: str, max_chunks: int = 3, max_chars: int = 6000) -> str:
+    """Keyword-matched full field schemas, live from the Lacework CLI catalog, for the datasources
+    most relevant to this objective — real field names/types instead of the model guessing. Falls
+    back to the static text file's per-section chunks if the live CLI is unavailable."""
+    catalog = _load_lw_datasource_catalog()
+    if not catalog:
+        return _retrieve_lql_reference_fallback(objective, max_chunks, max_chars)
+
+    words = [w for w in re.findall(r'[a-z0-9]+', objective.lower())
+             if w not in _LQL_RETRIEVAL_STOPWORDS and len(w) > 2]
+    if not words:
+        return ''
+    scored = []
+    for entry in catalog:
+        name_l = (entry.get('name') or '').lower()
+        desc_l = (entry.get('description') or '').lower()
+        score = sum(name_l.count(w) for w in words) * 25 + sum(desc_l.count(w) for w in words) * 5
+        if score >= _LQL_RETRIEVAL_MIN_SCORE:
+            scored.append((score, entry))
+    scored.sort(key=lambda x: -x[0])
+
+    out, budget = [], max_chars
+    for _, entry in scored[:max_chunks]:
+        snippet = _datasource_field_schema_text(entry)[:2500]
+        if len(snippet) > budget:
+            break
+        out.append(snippet)
+        budget -= len(snippet)
+    return '\n\n---\n\n'.join(out)
+
+# ── Static text-file fallback (only used if the lacework CLI is unavailable/unconfigured) ──
+_lql_reference_chunks = None  # lazy-loaded cache: list of (datasource_name, chunk_text)
+
+def _load_lql_reference_chunks():
+    global _lql_reference_chunks
+    if _lql_reference_chunks is not None:
+        return _lql_reference_chunks
+    _lql_reference_chunks = []
+    if not os.path.exists(_LQL_REFERENCE_PATH):
+        return _lql_reference_chunks
+    with open(_LQL_REFERENCE_PATH, encoding='utf-8', errors='ignore') as f:
+        lines = f.readlines()
+
+    noise_re = re.compile(r'^(FortiCNAPP [\d.]+ LQL Reference Guide|Fortinet Inc\.|Datasource Metadata)\s*\d*\s*$')
+    lines = [l for l in lines if not noise_re.match(l.strip())]
+
+    header_re = re.compile(r'^(LW_[A-Z0-9_]+|CloudTrail\w+)\n?$')
+    header_idx = [i for i, l in enumerate(lines) if header_re.match(l)]
+    for n, idx in enumerate(header_idx):
+        name = lines[idx].strip()
+        end  = header_idx[n + 1] if n + 1 < len(header_idx) else len(lines)
+        body = ''.join(lines[idx:end]).strip()
+        if len(body) > 40:
+            _lql_reference_chunks.append((name, body))
+    return _lql_reference_chunks
+
+def _all_lql_datasources_text_fallback() -> str:
+    chunks = _load_lql_reference_chunks()
+    return '\n'.join(name for name, _ in chunks)
+
+def _retrieve_lql_reference_fallback(objective: str, max_chunks: int = 3, max_chars: int = 5000) -> str:
     chunks = _load_lql_reference_chunks()
     if not chunks:
         return ''
@@ -1536,8 +1641,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
 You are a FortiCNAPP LQL (Lacework Query Language) expert. Generate a single valid LQL query for the given objective.
 
 ━━ CVE ROUTING RULE ━━
-If the objective involves CVE vulnerabilities (e.g. "hosts with CVE-xxx", "vulnerable hosts", "container images with vulnerabilities", "patch exposure"), do NOT generate LQL. Respond ONLY with:
+This rule is ONLY about software vulnerability/patch data — a specific CVE ID, "vulnerable hosts/images",
+or "patch exposure/available". If the objective literally names or clearly means one of those, do NOT
+generate LQL. Respond ONLY with:
 {"queryId": "USE_CVE_TAB", "queryText": "", "note": "CVE vulnerability data is not available in LQL. Use the CVE tab in this panel instead — it queries the FortiCNAPP Vulnerabilities API directly and shows hosts ranked by internet exposure and risk score."}
+
+Do NOT route to the CVE tab for IAM/identity/entitlement objectives just because they mention "privilege",
+"admin", "access", or "escalation" — those are IAM questions (LW_CE_ENTITLEMENTS, LW_CFG_AWS_IAM_*), not
+software vulnerability questions, even though the words sound adjacent to "privilege escalation" CVEs.
+"IAM roles with admin privilege" or "roles with excessive permissions" is an entitlement/config query —
+generate real LQL for it. Only route to the CVE tab when the objective is unambiguously about patchable
+software vulnerabilities, not general security posture, misconfiguration, or access-risk questions.
 
 ━━ LQL SYNTAX ━━
 Structure:       { source { DATASOURCE } filter { conditions } return distinct { columns } }
@@ -1610,6 +1724,17 @@ Standard compliance return columns:
 
 ━━ AWS CONFIG DATASOURCES ━━
 Identity & Access:
+CAUTION: IAM is a GLOBAL AWS service, not region-scoped. Every LW_CFG_AWS_IAM_* datasource has
+RESOURCE_REGION = 'aws-global' on every row — verified against real tenant data (26/26 rows). There
+is NO field on any IAM datasource — not RESOURCE_REGION, not ACCOUNT_ALIAS, not any tag — that
+reliably maps an IAM role/user/policy to a country or region, because IAM genuinely has no such
+locality. If an objective asks for "IAM roles in Canada" (or any other country/region):
+  - Do NOT filter on RESOURCE_REGION — always 'aws-global', matches zero rows.
+  - Do NOT invent an ACCOUNT_ALIAS/tag pattern that "sounds like" the requested region (e.g.
+    '<Country> PAYG%', '<Country>-prod') unless that literal string was given to you as real tenant
+    data in this prompt — a plausible-looking account name is a fabrication, not a filter.
+  - The correct answer is an account-wide IAM query with the region/country dropped entirely,
+    returned as query results — not silently made to look region-filtered when it isn't.
   LW_CFG_AWS_IAM_USERS                        — IAM users list
   LW_CFG_AWS_IAM_USERS_GET_CREDENTIAL_REPORT  — credential report; ALL credential fields live under RESOURCE_CONFIG in lowercase:
                                                RESOURCE_CONFIG:mfa_active = 'true'/'false'
@@ -1627,7 +1752,17 @@ Identity & Access:
   LW_CFG_AWS_IAM_USERS_LIST_POLICIES          — inline policies per user
   LW_CFG_AWS_IAM_USERS_LIST_ACCESS_KEYS       — access key metadata per user
   LW_CFG_AWS_IAM_ROLES                        — IAM roles
-  LW_CFG_AWS_IAM_ROLES_LIST_ATTACHED_POLICIES — managed policies attached to roles
+  LW_CFG_AWS_IAM_ROLES_LIST_ATTACHED_POLICIES — managed policies attached to roles — USE THIS for
+                                               "roles with admin/excessive privilege" objectives (filter
+                                               RESOURCE_CONFIG:PolicyName::String = 'AdministratorAccess' or similar).
+                                               This is about PERMISSIONS (what the role can DO).
+  LW_CFG_AWS_IAM_GET_ROLE                     — single-role detail; CAUTION: this is NOT permissions —
+                                               it only has the TRUST policy (who can ASSUME the role), nested
+                                               under RESOURCE_CONFIG:Role.* (not flat RESOURCE_CONFIG:*):
+                                               RESOURCE_CONFIG:Role.RoleName::String,
+                                               RESOURCE_CONFIG:Role.AssumeRolePolicyDocument (JSON), RESOURCE_CONFIG:Role.Tags.
+                                               Wrong choice for "admin privilege" objectives — use
+                                               LW_CFG_AWS_IAM_ROLES_LIST_ATTACHED_POLICIES for those instead.
   LW_CFG_AWS_IAM_POLICIES                     — IAM managed policies
   LW_CFG_AWS_IAM_GROUPS                       — IAM groups
   LW_CFG_AWS_IAM_MFA_DEVICES                  — virtual MFA devices
@@ -1844,11 +1979,18 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
         if _schema_hints:
             system_prompt += f'\n\n━━ LIVE TENANT CONTEXT ━━\n{_schema_hints}'
 
+        _all_datasources = _all_lql_datasources_text()
+        if _all_datasources:
+            system_prompt += (
+                '\n\n━━ EVERY REAL DATASOURCE NAME (verified, do not use any name not in this list) ━━\n'
+                f'{_all_datasources}'
+            )
+
         _reference_excerpts = _retrieve_lql_reference(objective)
         if _reference_excerpts:
             system_prompt += (
-                '\n\n━━ LQL REFERENCE DOC EXCERPTS (authoritative — prefer these exact field names '
-                f'over any conflicting guidance above) ━━\n{_reference_excerpts}'
+                '\n\n━━ RELEVANT DATASOURCE FIELD SCHEMAS (authoritative — prefer these exact field '
+                f'names over any conflicting guidance above) ━━\n{_reference_excerpts}'
             )
 
         # Embed system as first user message — works for Anthropic and OpenAI-compatible gateways

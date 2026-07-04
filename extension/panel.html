@@ -481,59 +481,47 @@ body {
 .drawer-status.ok  { color: var(--ok); }
 .drawer-status.err { color: var(--err); }
 
-/* Cute dog running around + pooping randomly while AI Assist fetches/retries/enriches, with a
-   human sprinting after it to scoop each one up — pure fun, no functional role. panel.js handles
-   the roaming/pooping/chasing logic; these classes are just the visual pieces. */
-.lql-dog, .lql-runner, .lql-poop {
+/* A little sailboat cruising around the whole panel while AI Assist fetches/retries/enriches,
+   leaving a brief fading wake behind it — pure fun, no functional role. panel.js handles the
+   roaming logic; these classes are just the visual pieces. */
+.lql-boat, .lql-wake {
   position: fixed;
   z-index: 9999;
   pointer-events: none;
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,.35));
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,.3));
 }
-.lql-dog {
+.lql-boat {
   display: none;
-  font-size: 42px;
+  font-size: 40px;
   line-height: 1;
-  transform-origin: 50% 80%;
-  /* Spring/overshoot easing instead of a plain ease curve — snaps to the new spot and settles
-     with a tiny bounce-back, reads as far more "alive" than a linear glide. */
-  transition: left .32s cubic-bezier(.34,1.56,.64,1), top .32s cubic-bezier(.34,1.56,.64,1);
-  animation: dog-trot .32s cubic-bezier(.45,0,.55,1) infinite;
-  --dir: 1; /* set via JS inline style (not a class) — a static .transform rule would be
-               silently overridden every frame by the keyframe animation's own transform */
+  transform-origin: 50% 65%;
+  left: 0; top: 0; /* actual position comes entirely from offset-path — JS only ever sets that */
+  offset-rotate: 0deg; /* fixed — stays upright all the way around the circle, never tilts to face travel direction */
+  --dir: 1; /* flipped by JS on a random timer — simulates the sail changing side on crossing winds */
+  /* Two independent animations: boat-sail moves it along the current circle (JS swaps
+     offset-path + animation-duration for a new random-size circle periodically), boat-rock
+     layers a gentle vertical bob + the current --dir flip on top — offset-path motion and
+     `transform` compose, not conflict. */
+  animation: boat-rock 2.2s ease-in-out infinite, boat-sail 12s linear infinite;
 }
-.lql-runner {
-  display: none;
-  font-size: 38px;
+.lql-wake {
+  font-size: 13px;
   line-height: 1;
-  transition: left .28s cubic-bezier(.22,1,.36,1), top .28s cubic-bezier(.22,1,.36,1);
-  animation: runner-sprint .22s ease-in-out infinite;
-  --dir: 1;
+  opacity: .8;
+  animation: wake-fade 1.6s ease-out forwards;
 }
-.lql-poop {
-  font-size: 28px;
-  line-height: 1;
-  animation: poop-plop .28s cubic-bezier(.34,1.56,.64,1);
-}
-.lql-poop.scooped { animation: poop-scoop .22s cubic-bezier(.55,0,.85,.35) forwards; }
 
-@keyframes dog-trot {
-  0%, 100% { transform: translateY(0)    rotate(0deg)  scaleX(var(--dir, 1))          scale(1); }
-  40%      { transform: translateY(-9px) rotate(-9deg) scaleX(var(--dir, 1))          scale(1.03, .96); }
-  70%      { transform: translateY(0)    rotate(3deg)  scaleX(var(--dir, 1))          scale(.97, 1.03); }
+@keyframes boat-rock {
+  0%, 100% { transform: translateY(0)   scaleX(var(--dir, 1)); }
+  50%      { transform: translateY(-4px) scaleX(var(--dir, 1)); }
 }
-@keyframes runner-sprint {
-  0%, 100% { transform: translateY(0)   rotate(0deg)  scaleX(var(--dir, 1)); }
-  50%      { transform: translateY(-7px) rotate(10deg) scaleX(var(--dir, 1)); }
+@keyframes boat-sail {
+  from { offset-distance: 0%; }
+  to   { offset-distance: 100%; }
 }
-@keyframes poop-plop {
-  0%   { opacity: 0; transform: scale(0)    translateY(-10px); }
-  60%  { opacity: 1; transform: scale(1.25) translateY(1px); }
-  100% { opacity: 1; transform: scale(1)    translateY(0); }
-}
-@keyframes poop-scoop {
-  0%   { opacity: 1; transform: scale(1)   translateY(0)    rotate(0deg); }
-  100% { opacity: 0; transform: scale(.2) translateY(-22px) rotate(140deg); }
+@keyframes wake-fade {
+  0%   { opacity: .8; transform: scale(1)  translateY(0); }
+  100% { opacity: 0;  transform: scale(.4) translateY(6px); }
 }
 
 .drawer-results {
@@ -1563,9 +1551,8 @@ a.ext-link:hover { color: var(--accent-d); }
              autocomplete="off" style="flex:1;min-width:160px" />
       <button id="lql-gen-btn" class="drawer-btn primary">▶ Run Query</button>
       <span id="lql-gen-status" class="drawer-status"></span>
-      <span id="lql-gen-dog" class="lql-dog" title="Working hard…">🐕</span>
-      <span id="lql-gen-runner" class="lql-runner" title="Cleanup crew">🏃</span>
-      <div id="lql-gen-poop-trail"></div>
+      <span id="lql-gen-boat" class="lql-boat" title="Working hard…">⛵</span>
+      <div id="lql-gen-wake-trail"></div>
     </div>
     <div id="lql-gen-results"></div>
   </div>

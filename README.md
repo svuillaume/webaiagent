@@ -159,6 +159,24 @@ Console output shows each attempt:
 
 ---
 
+## TokenIQ — Token Compression (optional)
+
+Report-generation prompts (LQL results, CVE intel, compliance data) can get large — TokenIQ is an optional local proxy that compresses that context before it reaches the AI gateway, cutting token usage without changing what comes back. It's built on the open-source [Headroom](https://github.com/chopratejas/headroom) project.
+
+**It's off by default and entirely optional** — chat works identically either way, just at full token cost when off.
+
+**Turn it on:**
+1. Start the sidecar: `docker compose up -d` (already included if you're running the default Docker setup — it's inert until enabled, so leaving it running costs nothing)
+2. In the panel, click **⚙ Admin**
+3. Click the routing badge (shows `🔀 direct` when off) → confirm the switch
+4. It flips to `🔀 TokenIQ · <savings>%` — a live lifetime-savings percentage, and stays on across restarts (`HEADROOM_ENABLED` is written to `.env`)
+
+Click **📊 TokenIQ Dashboard** (also in the Admin menu) to see the live savings dashboard in a new tab.
+
+If you're running `python3 serve.py` directly instead of Docker, you'll need Headroom running separately — see [Technical reference](#technical-reference) below for the exact env vars.
+
+---
+
 ## What you need before starting
 
 | Requirement | Notes |
