@@ -130,9 +130,18 @@ All six feed into the incident report's **Critical Context** section, including 
 ```
 User types objective
   ↓
-Relevant excerpts pulled from the LQL reference doc (keyword-matched, not the whole 530KB file)
+serve.py loads the full live datasource catalog — `lacework query list-sources --json`,
+cached after the first call: ~2340 real datasource names, always current
   ↓
-Claude generates LQL query, grounded in real field names from those excerpts
+Objective keyword-matched against that catalog → top few relevant datasources
+  e.g. "security groups" → LW_CFG_AWS_EC2_SECURITY_GROUPS
+  ↓
+Each match's full field schema is pulled from that same cached payload — the identical
+data `lacework query show-source LW_CFG_AWS_EC2_SECURITY_GROUPS` would return — and
+injected alongside the complete datasource-name list
+  ↓
+Claude generates LQL query, grounded in real field names — not guessed, not from a
+static doc that can drift out of date with your tenant's actual Lacework version
   ↓
 serve.py validates syntax (lacework CLI --validate_only)
   ↓ fails → error + hint → Claude fixes → retry (up to 9 attempts)
@@ -144,6 +153,8 @@ Rows returned → enriched with REST API (alerts, inventory, S3 sensitivity tags
   ↓
 Claude writes incident report
 ```
+
+The datasource catalog comes from the live `lacework` CLI, not a static reference file — the earlier approach parsed a PDF-derived text dump that truncated ~29% of long datasource names mid-word (column-width cutoff during extraction). The static file is kept only as a fallback if the CLI is ever unavailable.
 
 If the objective doesn't map to a known LQL-modeled resource type, `searchTerm` falls back to a FortiCNAPP Inventory REST search instead of forcing a bad LQL query. If the objective is actually a CVE question, it redirects straight to the Attack Surface flow instead — CVE data isn't in LQL.
 
