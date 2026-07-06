@@ -967,7 +967,6 @@ async function send(silent = false) {
     if (out) {
       const node = document.createElement('span');
       setRendered(node, renderMarkdown(out));
-      bubble.appendChild(node);
       bubble.appendChild(makeCopyBtn(out));
       bubble.appendChild(makePdfBtn(node));
       if (bubble._allBody) {
@@ -2799,7 +2798,6 @@ function _startLqlScopingConversation(objective, errorMsg) {
     if (out) {
       const node = document.createElement('span');
       setRendered(node, renderMarkdown(out));
-      bubble.appendChild(node);
       bubble.appendChild(makeCopyBtn(out));
       bubble.appendChild(makePdfBtn(node));
       if (bubble._allBody) {

@@ -64,6 +64,8 @@ Chrome Extension (extension/)
                            └──► lacework CLI  (SCA/SAST, SBOM)
 ```
 
+Note: the request path above is for FortiAIScout's own chat traffic (WebAiAgent → Headroom → Bifrost → Claude, when `HEADROOM_ENABLED=1`). Claude Code — the CLI tool used to develop this repo — is a separate consumer of Claude and talks directly to the Anthropic API; it does not go through this project's `serve.py`, Headroom, or Bifrost.
+
 **`serve.py`** — single-file Python stdlib HTTP server. Handles all backend routes, reads `.env` at startup, auto-detects `~/.lacework.toml` to set `lw_ready`. No framework, no dependencies.
 
 **`extension/panel.js`** — all extension logic: gateway auth header construction, streaming chat, LQL tab, CVE lookup, CodeSec. Gateway choice and model persist in `chrome.storage.local`; API key and gateway URL are session-RAM only (cleared on Chrome close, never written to disk). When on a GitHub repo page, CodeSec/SBOM fetches real files via the GitHub API (recursive tree + raw content, up to 80 files, manifests prioritised); on other pages it scrapes `<pre>` blocks and guesses filenames heuristically so lacework SCA receives correct manifest names.
