@@ -2155,7 +2155,7 @@ function buildCveAnalysisPrompt(d, fgOutbreaks) {
       h.container_exposed ? 'CONTAINER-EXPOSED' : '',
       h.fix_available     ? `fix→${h.fixed_version || fixVer}` : '',
     ].filter(Boolean).join(' ');
-    lines.push(`${i + 1}. ${h.hostname} [${h.severity}] account:${h.account || 'unknown'} region:${h.region || ''} risk:${h.host_risk_score.toFixed(1)} ${flags}`);
+    lines.push(`${i + 1}. ${h.hostname} [${h.severity}] csp:${h.csp || 'unknown'} instance:${h.instance_id || 'unknown'} type:${h.instance_type || ''} account:${h.account || 'unknown'} region:${h.region || ''} vpc:${h.vpc_id || ''} risk:${h.host_risk_score.toFixed(1)} ${flags}`);
     h.packages.forEach(p  => lines.push(`   pkg: ${p.name} ${p.version}`));
     h.containers.forEach(c => lines.push(`   ctr: ${c.name}${c.internet_exposed ? ' 🌐 INTERNET-EXPOSED' : ''}`));
   });
@@ -2169,7 +2169,7 @@ function buildCveAnalysisPrompt(d, fgOutbreaks) {
     `Report-specific guidance:`,
     `- Title: "CVE ${d.cveId} Exposure"`,
     `- Status stats: ${d.total_affected} hosts affected, ${d.internet_exposed} internet-exposed, CVSS ${intel.nvd?.cvssV3Score ?? '?'}, EPSS ${intel.epss?.score ?? '?'}.`,
-    `- "Affected Hosts" table: full hostname (never truncate), CSP account ID, region, severity, internet-exposed flag if applicable.`,
+    `- "Affected Hosts" table: full hostname (never truncate), CSP (AWS/Azure/GCP), instance ID, instance type, CSP account ID, region, VPC, severity, internet-exposed flag if applicable. Use "unknown" only if the data field is genuinely blank — never omit the column.`,
     `- Remediation: exact patch command per host/package (e.g. apt-get install <pkg>=<version>, yum update, docker pull <image>:<tag>).`,
     `- Discovery Date / Exposure Window are unknown for CVE data — omit those two fields from the report footer.`,
   );
@@ -2436,6 +2436,7 @@ async function runCveSearch() {
     }
 
     // Auto-trigger executive analysis with combined CNAPP + FortiGuard context
+    if (guardBusy()) return;
     const prompt = buildCveAnalysisPrompt(data, fgOutbreaks);
     history.push({ role: 'user', content: prompt });
     appendTurn('user', `Analyse attack surface for ${cveId}`);
@@ -2523,8 +2524,16 @@ function renderCveResults(data, resultsEl) {
       body.appendChild(row);
     };
 
-    addRow('account',  h.account);
-    addRow('region',   h.region);
+    addRow('csp',         h.csp);
+    addRow('instance id', h.instance_id);
+    addRow('account',     h.account);
+    addRow('region',      h.region);
+    addRow('vpc',         h.vpc_id);
+    addRow('type',        h.instance_type);
+    addRow('ami',         h.ami_id);
+    addRow('internal ip', h.internal_ip);
+    addRow('external ip', h.external_ip);
+    addRow('state',       h.state);
     const pkgStr = h.packages.map(p => `${p.name} ${p.version}`.trim()).join(', ');
     addRow('packages', pkgStr);
     if (h.fix_available) addRow('fix →', h.fixed_version || 'available', 'fix');

@@ -1347,7 +1347,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if not cve_id:
             self.send_json(400, json.dumps({'error': 'cveId is required'}).encode())
             return
-        days = int(payload.get('days', 7))
+        days = max(1, min(int(payload.get('days', 7)), 90))
 
         try:
             token, base_url = self._lw_token()
@@ -1356,9 +1356,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         headers = {'Authorization': f'Bearer {token}', 'Content-Type': 'application/json'}
-        now   = datetime.now(timezone.utc)
-        start = (now - timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ')
-        end   = now.strftime('%Y-%m-%dT%H:%M:%SZ')
 
         def _post_api(path, body):
             req  = urllib.request.Request(
@@ -1376,26 +1373,49 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     msg = err.decode()[:400]
                 raise RuntimeError(f'{e.code}: {msg}')
 
+        # Lacework's Vulnerabilities/Hosts/search API hard-rejects (400) any
+        # startTime/endTime span over 7 days, so a wider request is split into
+        # contiguous <=7-day windows and the results merged.
+        now = datetime.now(timezone.utc)
+        windows, remaining, w_end = [], days, now
+        while remaining > 0:
+            span   = min(remaining, 7)
+            w_start = w_end - timedelta(days=span)
+            windows.append((w_start, w_end))
+            w_end = w_start
+            remaining -= span
+
         vuln_rows = []
+        errors = []
         for sev in ('Critical', 'High'):
-            try:
-                resp = _post_api('/api/v2/Vulnerabilities/Hosts/search', {
-                    'timeFilter': {'startTime': start, 'endTime': end},
-                    'filters': [
-                        {'field': 'status',   'expression': 'eq', 'value': 'Active'},
-                        {'field': 'severity', 'expression': 'eq', 'value': sev},
-                        {'field': 'vulnId',   'expression': 'eq', 'value': cve_id},
-                    ],
-                    'returns': ['vulnId', 'severity', 'status', 'cveRiskScore',
-                                'hostRiskScore', 'featureKey', 'fixInfo',
-                                'machineTags', 'mid', 'evalCtx'],
-                    'limit': 5000,
-                })
-                vuln_rows.extend(resp.get('data', []))
-            except RuntimeError:
-                pass
+            for w_start, w_end in windows:
+                try:
+                    resp = _post_api('/api/v2/Vulnerabilities/Hosts/search', {
+                        'timeFilter': {
+                            'startTime': w_start.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                            'endTime':   w_end.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                        },
+                        'filters': [
+                            {'field': 'status',   'expression': 'eq', 'value': 'Active'},
+                            {'field': 'severity', 'expression': 'eq', 'value': sev},
+                            {'field': 'vulnId',   'expression': 'eq', 'value': cve_id},
+                        ],
+                        'returns': ['vulnId', 'severity', 'status', 'cveRiskScore',
+                                    'hostRiskScore', 'featureKey', 'fixInfo',
+                                    'machineTags', 'mid', 'evalCtx'],
+                        'limit': 5000,
+                    })
+                    vuln_rows.extend(resp.get('data', []))
+                except RuntimeError as e:
+                    errors.append(str(e))
 
         if not vuln_rows:
+            total_calls = 2 * len(windows)
+            if errors and len(errors) == total_calls:  # every window/severity call failed outright
+                self.send_json(502, json.dumps({
+                    'error': f'FortiCNAPP query failed: {errors[0]}'
+                }).encode())
+                return
             self.send_json(200, json.dumps({
                 'cveId': cve_id, 'hosts': [], 'total_affected': 0,
                 'note': f'No active records for {cve_id} in the last {days} days.',
@@ -1415,7 +1435,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     'mid':              mid,
                     'hostname':         tags.get('Hostname') or ctx.get('hostname') or mid,
                     'account':          tags.get('Account') or tags.get('account') or '',
-                    'region':           tags.get('Region') or tags.get('region') or '',
+                    # Lacework's actual field is "Zone", not "Region" — kept the old
+                    # keys as a fallback in case other CSPs populate them instead.
+                    'region':           tags.get('Zone') or tags.get('Region') or tags.get('region') or '',
+                    'csp':              tags.get('VmProvider') or tags.get('CloudProvider') or '',
+                    'instance_id':      tags.get('InstanceId') or tags.get('InstanceID') or '',
+                    'instance_type':    tags.get('VmInstanceType') or tags.get('InstanceType') or '',
+                    'vpc_id':           tags.get('VpcId') or tags.get('VNetId') or '',
+                    'ami_id':           tags.get('AmiId') or tags.get('ImageId') or '',
+                    'internal_ip':      tags.get('InternalIp') or '',
+                    'external_ip':      tags.get('ExternalIp') or '',
+                    'state':            tags.get('State') or '',
                     # lw_InternetExposure is often unpopulated — fall back to "has a public IP"
                     'host_exposed':     (str(tags.get('lw_InternetExposure', '')).lower() == 'yes'
                                           or bool(tags.get('ExternalIp'))),
@@ -1440,13 +1470,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if pkg and pkg not in [p['name'] for p in hosts[mid]['packages']]:
                 hosts[mid]['packages'].append({'name': pkg, 'version': ver})
 
-        mids  = list(hosts.keys())
-        BATCH = 20
-        for i in range(0, len(mids), BATCH):
-            batch = mids[i:i + BATCH]
+        # Query containers per CSP actually present among the affected hosts —
+        # hardcoding 'AWS' here silently dropped all Azure/GCP container matches.
+        csps_present = sorted({h['csp'] for h in hosts.values() if h.get('csp')}) or ['AWS']
+        for csp in csps_present:
             try:
                 resp = _post_api('/api/v2/Inventory/search', {
-                    'csp': 'AWS',
+                    'csp': csp,
                     'filters': [{'field': 'resourceType', 'expression': 'eq',
                                  'value': 'container:workload'}],
                     'returns': ['urn', 'resourceType', 'resourceConfig',

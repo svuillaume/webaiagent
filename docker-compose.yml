@@ -22,8 +22,15 @@ services:
   # extension's routing badge. webai reaches it
   # at http://headroom:8787 (HEADROOM_URL in .env); the dashboard is published to the host at
   # 127.0.0.1:8787 (HEADROOM_DASHBOARD_URL) since that link is opened directly by the browser.
-  # --compress-user-messages: this app sends single-turn user messages with embedded JSON, not a
-  #   multi-turn agent tool loop — Headroom skips compressing user-role content by default.
+  # HEADROOM_COMPRESS_USER_MESSAGES must stay UNSET (default off). This app sends single-turn
+  #   user messages with embedded JSON/tabular data (e.g. the CVE attack-surface report prompt)
+  #   that the model must see verbatim — with this flag on, Headroom replaces large repeated
+  #   blocks in user-role content with an opaque hash reference. Combined with
+  #   --no-ccr-inject-tool below (which disables the retrieval tool needed to expand that
+  #   reference), the model receives a placeholder it cannot resolve and silently reports
+  #   generic, data-free output instead of the actual report. Confirmed by direct reproduction:
+  #   a 60-host CVE prompt came back as "you mentioned 69 lines compressed with a hash
+  #   reference" with this flag on, and a complete, correct 60-row table with it off.
   # --no-ccr-inject-tool: Headroom's CCR reversible-compression tool-injection buffers streaming
   #   responses to resolve retrieval calls server-side, and its buffered-to-SSE reconstruction
   #   can't handle Anthropic's server_tool_use blocks (what web_search_20260209 produces) — this
@@ -36,7 +43,6 @@ services:
     ports:
       - "8787:8787"
     environment:
-      - HEADROOM_COMPRESS_USER_MESSAGES=1
       - HEADROOM_NO_CCR_INJECT_TOOL=1
     command: ["--host", "0.0.0.0", "--port", "8787", "--anthropic-api-url", "${ANTHROPIC_BASE_URL}"]
     volumes:

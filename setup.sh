@@ -128,19 +128,30 @@ fi
 
 # ── Step 5: start serve.py ─────────────────────────────────────────────────────
 echo ""
-info "Starting FortiAIScout (python3 serve.py)..."
-nohup python3 serve.py > serve.log 2>&1 &
-echo $! > .serve.pid
+if lsof -ti:45321 >/dev/null 2>&1; then
+  info "FortiAIScout is already running on port 45321 — leaving it as is."
+else
+  info "Starting FortiAIScout (python3 serve.py)..."
+  nohup python3 serve.py > serve.log 2>&1 &
+  echo $! > .serve.pid
 
-echo -n "  Waiting for server"
-for i in $(seq 1 20); do
-  if curl -s "http://localhost:45321/config" >/dev/null 2>&1; then
-    echo " ✓"
-    break
-  fi
-  echo -n "."
-  sleep 1
-done
+  echo -n "  Waiting for server"
+  READY=false
+  for i in $(seq 1 20); do
+    if ! kill -0 "$(cat .serve.pid)" 2>/dev/null; then
+      echo " ✗"
+      error "serve.py exited immediately — check serve.log:\n$(tail -5 serve.log)"
+    fi
+    if curl -s "http://localhost:45321/config" >/dev/null 2>&1; then
+      echo " ✓"
+      READY=true
+      break
+    fi
+    echo -n "."
+    sleep 1
+  done
+  [ "$READY" = true ] || error "Server did not come up in time — check serve.log"
+fi
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
