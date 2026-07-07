@@ -4,3 +4,6 @@
 serve.log
 __pycache__/
 extension/config.json
+
+# Local git worktrees (session-isolated workspaces)
+.worktrees/
