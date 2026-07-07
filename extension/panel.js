@@ -215,7 +215,7 @@ Here's what I can help with:
 • 🛡 **Scan Code** — SCA + SAST on code from this page or a GitHub repo · [example](https://github.com/svuillaume/webaiagent#features)
   - SAST: Go · Java · JavaScript · PHP · Python · TypeScript
   - SCA: .NET · C/C++ · Go · Java · Node.js · PHP · Python · Ruby · Rust
-• 🔰 **FortiCNAPP** — Compliance, AI Assist, and Attack Surface analysis (Scan Code lives in this menu too) · [walkthrough](https://github.com/svuillaume/webaiagent#end-to-end-workflow)
+• 🔰 **FortiCNAPP** — Compliance, Risk Hunting, and Attack Surface analysis (Scan Code lives in this menu too) · [walkthrough](https://github.com/svuillaume/webaiagent#end-to-end-workflow)
 • ⚙ **Admin** — swap AI gateway, model, or the TokenIQ compression proxy any time · [details](https://github.com/svuillaume/webaiagent#environment-variables-env)
 
 Ask me anything, or pick a tool above to get started.`);
@@ -2006,7 +2006,7 @@ function _regulatoryContext(regions = []) {
   return lines.join('\n');
 }
 
-// Shared incident-report template for FortiCNAPP Advanced Analytics (LQL) and
+// Shared incident-report template for FortiCNAPP Risk Hunting (LQL) and
 // Unified Attack Threat Surface (CVE) reports. This OVERRIDES the system prompt's
 // default Objective/Findings/Fix structure per its own precedence rule.
 const INCIDENT_REPORT_TEMPLATE = `Use EXACTLY this Markdown template. Fill every placeholder from the data provided below; omit
@@ -2632,7 +2632,7 @@ el('lql').addEventListener('click', async () => {
   panel.classList.toggle('open', !isOpen);
   el('codesec-panel').classList.remove('open');
   el('compliance-panel').classList.remove('open');
-  if (!isOpen) { startNewSession('Advanced Analytics'); loadLqlQueries(); }
+  if (!isOpen) { startNewSession('Risk Hunting'); loadLqlQueries(); }
 });
 
 el('lql-close').addEventListener('click', () => {
