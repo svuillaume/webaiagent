@@ -2429,6 +2429,136 @@ print(f'Gateway       →  {current_upstream().rstrip("/")}/v1/*  key:{"ok" if V
 print(f'FortiCNAPP    →  creds:{"ok" if LW_READY else "MISSING"}  cli:{"ok" if LW_AVAILABLE else "not found"}')
 print(f'LQL dir       →  {LQL_QUERIES_DIR or "not set"}')
 
+# ── FortiCNAPP MCP client (Cloud Investigation) ──────────────────────────────
+# Hand-rolled stdio JSON-RPC client — deliberately not importing the `mcp` SDK
+# here, to keep serve.py's own imports stdlib-only. The vendored MCP server
+# (webaiagent/vendor/mcp_forticnapp) is spawned as a subprocess and speaks
+# newline-delimited JSON-RPC 2.0 over stdin/stdout, same as any MCP stdio
+# server. Access is fully serialized behind _mcp_lock, so there is never more
+# than one in-flight request — "read the next line" is always "read the
+# response to the request just sent."
+_mcp_lock  = threading.Lock()
+_mcp_state = {'proc': None, 'tools': None, 'next_id': 1}
+MCP_SPEC_PATH = os.path.join(DIR, 'vendor', 'mcp_forticnapp', 'lw.yaml')
+
+
+def _mcp_next_id():
+    _mcp_state['next_id'] += 1
+    return _mcp_state['next_id']
+
+
+def _mcp_write(proc, obj):
+    proc.stdin.write(json.dumps(obj) + '\n')
+    proc.stdin.flush()
+
+
+def _mcp_read_response(proc, want_id, timeout=30):
+    """Block-read lines from proc.stdout until one with id == want_id arrives.
+
+    Lines without a matching id (server-initiated notifications, if any) are
+    skipped. Raises TimeoutError if the process produces no matching line
+    within `timeout` seconds, RuntimeError if the pipe closes (process died).
+    """
+    import queue
+    q = queue.Queue()
+
+    def _reader():
+        line = proc.stdout.readline()
+        q.put(line)
+
+    t = threading.Thread(target=_reader, daemon=True)
+    t.start()
+    try:
+        line = q.get(timeout=timeout)
+    except queue.Empty:
+        raise TimeoutError(f'MCP server did not respond within {timeout}s (id={want_id})')
+    if not line:
+        raise RuntimeError('MCP server closed its output pipe (process likely exited)')
+    msg = json.loads(line)
+    if msg.get('id') != want_id:
+        # Only one request is ever in flight (serialized by _mcp_lock), so a
+        # mismatched id means a protocol-level surprise — surface it rather
+        # than silently discarding.
+        raise RuntimeError(f'MCP server response id mismatch: expected {want_id}, got {msg.get("id")}')
+    if 'error' in msg:
+        raise RuntimeError(f'MCP error: {msg["error"]}')
+    return msg.get('result', {})
+
+
+def _mcp_ensure_started():
+    """Lazily spawn (or respawn after a crash) the forticnapp-mcp subprocess,
+    perform the initialize handshake, and cache its tool list."""
+    with _mcp_lock:
+        proc = _mcp_state['proc']
+        if proc is not None and proc.poll() is None and _mcp_state['tools'] is not None:
+            return  # already running and handshaken
+
+        account, api_key, api_secret = _lw_creds()
+        if not (account and api_key and api_secret):
+            raise RuntimeError('FortiCNAPP credentials not found (~/.lacework.toml) — Cloud Investigation unavailable')
+        if not os.path.exists(MCP_SPEC_PATH):
+            raise RuntimeError(f'MCP spec not found at {MCP_SPEC_PATH} — was the image built with vendor/mcp_forticnapp?')
+
+        env = dict(os.environ)
+        env.update({
+            'FORTICNAPP_API_BASE_URL':  f'https://{account}.lacework.net',
+            'FORTICNAPP_KEY_ID':        api_key,
+            'FORTICNAPP_API_SECRET':    api_secret,
+            'FORTICNAPP_OPENAPI_SPEC':  MCP_SPEC_PATH,
+            'ENABLE_MUTATION_TOOLS':    'false',
+        })
+        proc = subprocess.Popen(
+            ['python3', '-m', 'forticnapp_mcp.main'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, bufsize=1, env=env,
+        )
+        _mcp_state['proc']  = proc
+        _mcp_state['tools'] = None
+
+        init_id = _mcp_next_id()
+        _mcp_write(proc, {
+            'jsonrpc': '2.0', 'id': init_id, 'method': 'initialize',
+            'params': {
+                'protocolVersion': '2024-11-05',
+                'capabilities': {},
+                'clientInfo': {'name': 'webaiagent', 'version': '1.0'},
+            },
+        })
+        _mcp_read_response(proc, init_id, timeout=30)
+        _mcp_write(proc, {'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+
+        list_id = _mcp_next_id()
+        _mcp_write(proc, {'jsonrpc': '2.0', 'id': list_id, 'method': 'tools/list', 'params': {}})
+        result = _mcp_read_response(proc, list_id, timeout=30)
+        _mcp_state['tools'] = [
+            {'name': t['name'], 'description': t.get('description', ''), 'input_schema': t['inputSchema']}
+            for t in result.get('tools', [])
+        ]
+
+
+def _mcp_call_tool(name, arguments, timeout=60):
+    with _mcp_lock:
+        proc = _mcp_state['proc']
+        if proc is None or proc.poll() is not None:
+            raise RuntimeError('MCP subprocess is not running — call _mcp_ensure_started() first')
+        call_id = _mcp_next_id()
+        _mcp_write(proc, {
+            'jsonrpc': '2.0', 'id': call_id, 'method': 'tools/call',
+            'params': {'name': name, 'arguments': arguments or {}},
+        })
+        result = _mcp_read_response(proc, call_id, timeout=timeout)
+        if result.get('structuredContent') is not None:
+            return result['structuredContent']
+        # Fallback: some tool results may only populate content[0].text (JSON-encoded)
+        content = result.get('content') or []
+        if content and content[0].get('type') == 'text':
+            try:
+                return json.loads(content[0]['text'])
+            except json.JSONDecodeError:
+                return {'success': not result.get('isError', False), 'data': content[0]['text']}
+        return {'success': not result.get('isError', False), 'data': None}
+
+
 import socket as _socket
 def _port_open(port):
     with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as s:
