@@ -1190,6 +1190,27 @@ const SKIP_DIRS = new Set([
   'target', 'out', 'bin', 'obj',
 ]);
 
+// SAST-scanned source extensions (Go, Java, JS, PHP, Python, TypeScript — the
+// languages lacework SAST actually supports; see CLAUDE.md).
+const SAST_EXTS = new Set(['.go', '.java', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts', '.php', '.py']);
+// Infrastructure-as-Code: Terraform, Dockerfiles, Kubernetes/Helm/CloudFormation
+// YAML. Checked before the SCA manifest set below, since Dockerfile/Chart.yaml
+// are also in MANIFEST_NAMES (kept there unchanged — that set still drives what
+// fetchGithubRepoFiles/serve.py treat as a manifest for the actual scan; this is
+// a separate, display-only categorization for the GitHub file card).
+const IAC_EXTS  = new Set(['.tf', '.tfvars', '.yaml', '.yml']);
+const IAC_NAMES = new Set(['Dockerfile', 'Chart.yaml', 'Chart.lock', '.dockerignore']);
+
+// Display-only categorization for the GitHub repo card — SAST | IaC | SCA | Other.
+function categorizeGithubFile(path) {
+  const name = path.split('/').pop();
+  const ext  = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+  if (IAC_NAMES.has(name) || IAC_EXTS.has(ext)) return 'IaC';
+  if (MANIFEST_NAMES.has(name) || MANIFEST_SUFFIXES.some(s => name.endsWith(s))) return 'SCA';
+  if (SAST_EXTS.has(ext)) return 'SAST';
+  return 'Other';
+}
+
 function githubRepoFromUrl(url) {
   // Matches: github.com/owner/repo[/tree/branch/...]
   const m = url.match(/github\.com\/([^/]+)\/([^/?#]+)(?:\/tree\/([^/?#]+))?/);
@@ -1235,7 +1256,6 @@ async function fetchGithubRepoFiles(owner, repo, branchHint) {
 
   // Prioritise manifests; then source files sorted by extension priority
   // (SAST langs first so they're never starved by IaC/misc files)
-  const SAST_EXTS = new Set(['.go', '.java', '.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts', '.php', '.py']);
   const manifests = candidates.filter(f => isManifest(f.path.split('/').pop()));
   const sastSources = candidates.filter(f => {
     const name = f.path.split('/').pop();
@@ -1342,21 +1362,42 @@ function appendResultCard(icon, title, contentEl) {
 function appendGithubCard(owner, repo, branch, files) {
   const repoUrl = `https://github.com/${owner}/${repo}`;
 
-  // Group files by directory
-  const groups = {};
-  files.forEach(f => {
-    const parts = (f.path || f.filename || '').split('/');
-    const dir   = parts.length > 1 ? parts.slice(0, -1).join('/') : '(root)';
-    (groups[dir] = groups[dir] || []).push(parts[parts.length - 1]);
-  });
+  // Group a list of files by directory (unchanged row/chip rendering, just
+  // reused per-category below instead of once for the whole file list).
+  const buildDirRows = (fileList) => {
+    const groups = {};
+    fileList.forEach(f => {
+      const parts = (f.path || f.filename || '').split('/');
+      const dir   = parts.length > 1 ? parts.slice(0, -1).join('/') : '(root)';
+      (groups[dir] = groups[dir] || []).push(parts[parts.length - 1]);
+    });
+    return Object.entries(groups).map(([dir, fnames]) => {
+      const dirLabel = dir === '(root)' ? '' : `<span class="gh-dir">${esc(dir)}/</span>`;
+      const fileChips = fnames.map(n => `<span class="gh-file">${esc(n)}</span>`).join('');
+      return `<div class="gh-row">${dirLabel}${fileChips}</div>`;
+    }).join('');
+  };
 
-  const rows = Object.entries(groups).map(([dir, fnames]) => {
-    const dirLabel = dir === '(root)' ? '' : `<span class="gh-dir">${esc(dir)}/</span>`;
-    const fileChips = fnames.map(n =>
-      `<span class="gh-file">${esc(n)}</span>`
-    ).join('');
-    return `<div class="gh-row">${dirLabel}${fileChips}</div>`;
-  }).join('');
+  // Categorize into SAST | IaC | SCA | Other before rendering — same buckets
+  // the CodeSec scan itself draws from (see categorizeGithubFile).
+  const CATEGORY_META = {
+    SAST:  { label: '🛡 SAST',  cls: 'sast'  },
+    IaC:   { label: '🏗 IaC',   cls: 'iac'   },
+    SCA:   { label: '📦 SCA',   cls: 'sca'   },
+    Other: { label: '📄 Other', cls: 'other' },
+  };
+  const byCategory = { SAST: [], IaC: [], SCA: [], Other: [] };
+  files.forEach(f => byCategory[categorizeGithubFile(f.path || f.filename || '')].push(f));
+
+  const sections = Object.keys(CATEGORY_META)
+    .filter(cat => byCategory[cat].length)
+    .map(cat => {
+      const meta = CATEGORY_META[cat];
+      return `<div class="gh-cat gh-cat-${meta.cls}">` +
+        `<div class="gh-cat-label">${meta.label}<span class="gh-cat-count">${byCategory[cat].length}</span></div>` +
+        buildDirRows(byCategory[cat]) +
+      `</div>`;
+    }).join('');
 
   const card = document.createElement('div');
   card.className = 'gh-card';
@@ -1367,7 +1408,7 @@ function appendGithubCard(owner, repo, branch, files) {
       `<span class="gh-branch">⎇ ${esc(branch)}</span>` +
       `<span class="gh-count">${files.length} file${files.length !== 1 ? 's' : ''}</span>` +
     `</div>` +
-    `<div class="gh-files">${rows}</div>`;
+    `<div class="gh-files">${sections}</div>`;
 
   el('log-latest').appendChild(card);
   el('log-all').appendChild(card.cloneNode(true));

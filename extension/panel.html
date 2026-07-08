@@ -1356,6 +1356,21 @@ a.ext-link:hover { color: var(--accent-d); }
   padding: 1px 6px;
 }
 
+.gh-cat + .gh-cat { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.gh-cat-label {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--muted); margin-bottom: 4px;
+}
+.gh-cat-count {
+  font-family: var(--mono); font-weight: 700; font-size: 9px;
+  border-radius: 8px; padding: 0 6px;
+}
+.gh-cat-sast  .gh-cat-count { color: var(--accent); background: rgba(238,49,36,.1); }
+.gh-cat-iac   .gh-cat-count { color: var(--warn);   background: rgba(251,191,36,.12); }
+.gh-cat-sca   .gh-cat-count { color: var(--ok);     background: var(--ok-bg); }
+.gh-cat-other .gh-cat-count { color: var(--dim);    background: var(--surface3); }
+
 .cursor {
   display: inline-block;
   width: 2px; height: 14px;
