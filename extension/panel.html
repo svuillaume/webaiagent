@@ -1533,6 +1533,7 @@ a.ext-link:hover { color: var(--accent-d); }
   <div class="lql-tabs">
     <div class="lql-tab active" data-tab="saved">LQL</div>
     <div class="lql-tab" data-tab="generate">✨ Assisted Investigation</div>
+    <div class="lql-tab" data-tab="investigate">🔎 Cloud Investigation</div>
   </div>
 
   <div class="lql-pane active" id="lql-pane-saved">
@@ -1555,6 +1556,16 @@ a.ext-link:hover { color: var(--accent-d); }
       <div id="lql-gen-wake-trail"></div>
     </div>
     <div id="lql-gen-results"></div>
+  </div>
+
+  <div class="lql-pane" id="lql-pane-investigate">
+    <div class="drawer-body">
+      <input id="investigate-prompt" class="drawer-input" type="text"
+             placeholder="e.g. find EC2 instances with public S3 buckets attached"
+             autocomplete="off" style="flex:1;min-width:160px" />
+      <button id="investigate-btn" class="drawer-btn primary">🔎 Investigate</button>
+      <span id="investigate-status" class="drawer-status"></span>
+    </div>
   </div>
 </div>
 
