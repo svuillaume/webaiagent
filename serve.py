@@ -1673,27 +1673,36 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "tenant data. Call as many tools as needed to gather evidence, then give "
             "a clear, evidence-grounded narrative answer citing the specific "
             "resources/accounts/regions you found. Never fabricate data not returned "
-            "by a tool call. If a tool call fails, note the failure and try a "
-            "different approach rather than guessing at an answer."
+            "by a tool call. If a tool call fails, read the error message (it names "
+            "the actual constraint, e.g. an exact allowed date range) and correct "
+            "your NEXT call accordingly — never repeat a call with the same mistake. "
+            "You have a strict budget of 6 tool calls total, so favor a single "
+            "well-targeted, filtered query over broad unfiltered ones. Time-ranged "
+            "endpoints commonly cap the span between startTime/endTime (often 7 or "
+            "90 days) — if you don't already know the objective needs history, start "
+            "with a narrow recent window rather than guessing at a wide one."
         )
         messages = [{'role': 'user', 'content': prompt}]
 
-        MAX_ITERATIONS = 6
-        for _ in range(MAX_ITERATIONS):
-            body = json.dumps({
+        def _call_gateway(include_tools):
+            """POST the current `messages` to the AI gateway. Returns the parsed
+            response dict, or None after emitting a 'final' error event itself
+            (caller should just `return` when this returns None)."""
+            body = {
                 'model': MODEL or 'claude-haiku-4-5',
                 'max_tokens': 4096,
                 'system': system_prompt,
                 'messages': messages,
-                'tools': _mcp_state['tools'],
-            }).encode()
+            }
+            if include_tools:
+                body['tools'] = _mcp_state['tools']
             req = urllib.request.Request(
-                current_upstream().rstrip('/') + '/v1/messages', data=body, method='POST',
-                headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY,
-                          'anthropic-version': '2023-06-01'})
+                current_upstream().rstrip('/') + '/v1/messages', data=json.dumps(body).encode(),
+                method='POST', headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY,
+                                         'anthropic-version': '2023-06-01'})
             try:
                 resp = urllib.request.urlopen(req, timeout=90)
-                resp_data = json.loads(resp.read())
+                return json.loads(resp.read())
             except urllib.error.HTTPError as e:
                 err_body = e.read()
                 try:
@@ -1701,9 +1710,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     msg = err_body.decode()[:400]
                 emit({'type': 'final', 'text': f'Investigation failed: {msg}'})
-                return
+                return None
             except Exception as e:
                 emit({'type': 'final', 'text': f'Investigation failed: {e}'})
+                return None
+
+        MAX_ITERATIONS = 6
+        for _ in range(MAX_ITERATIONS):
+            resp_data = _call_gateway(include_tools=True)
+            if resp_data is None:
                 return
 
             content_blocks = resp_data.get('content', [])
@@ -1764,7 +1779,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 })
             messages.append({'role': 'user', 'content': tool_results})
 
-        emit({'type': 'final', 'text': f'Investigation exceeded the {MAX_ITERATIONS}-step limit — try narrowing the objective.'})
+        # Iteration cap reached without the model naturally stopping. `messages` still
+        # holds every tool result gathered so far (successes and failures alike) — force
+        # one more tools-less call asking the model to synthesize its best answer from
+        # that, rather than discarding everything and reporting nothing.
+        messages.append({
+            'role': 'user',
+            'content': (
+                f'You have used your full {MAX_ITERATIONS}-call tool budget. Do not '
+                'request any more tools. Based only on what you already found above, '
+                'give the best answer you can to the original objective, being '
+                "explicit about what you were and weren't able to confirm."
+            ),
+        })
+        resp_data = _call_gateway(include_tools=False)
+        if resp_data is None:
+            return
+        text = ''.join(b.get('text', '') for b in resp_data.get('content', []) if b.get('type') == 'text')
+        emit({'type': 'final', 'text': text or f'Investigation exceeded the {MAX_ITERATIONS}-step limit and no answer could be synthesized — try narrowing the objective.'})
 
     def serve_lql_generate(self):
         try:

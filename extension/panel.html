@@ -661,11 +661,15 @@ body {
 .cve-containers { margin-top: 5px; padding-top: 5px; border-top: 1px solid var(--border); }
 
 /* ── Cloud Investigation tool-call trail ──────────────────────────────────── */
+/* Lives inside .turn-ai .content, a fixed light card (#f8f9fa bg / #111 text) kept
+   theme-independent for PDF export — var(--text)/var(--muted) would resolve to their
+   dark-mode (light) values here and render as light-on-light. Match the card's own
+   fixed palette instead, same as .turn-ai .content code does above. */
 .investigate-row { padding: 4px 0; font-size: 13px; font-family: var(--sans); line-height: 1.45; }
-.investigate-row .tool-name { font-weight: 600; color: var(--text); }
+.investigate-row .tool-name { font-weight: 600; color: inherit; }
 .investigate-row .tool-summary {
   display: block; margin-top: 2px; padding-left: 18px;
-  color: var(--muted); font-size: 12px;
+  color: #5a6070; font-size: 12px;
   white-space: normal; word-break: break-word;
 }
 
