@@ -1721,8 +1721,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 try:
                     result = _mcp_call_tool(block['name'], block.get('input', {}))
                     rows = result.get('data')
-                    count = len(rows) if isinstance(rows, list) else ('1' if result.get('success') else '0')
-                    summary = f'{count} result(s)' if result.get('success') else f"error: {result.get('error')}"
+                    if result.get('success'):
+                        count = len(rows) if isinstance(rows, list) else '1'
+                        summary = f'{count} result(s)'
+                    else:
+                        # FortiCNAPP's actual reason (e.g. "startTime/endTime span too
+                        # wide") usually lands in `data`, not the generic wrapper
+                        # error.message ("FortiCNAPP API returned 400") — surface the
+                        # real reason to both the browser and the model so retries are
+                        # informed rather than blind guesses.
+                        detail = (result.get('error') or {}).get('message', 'unknown error')
+                        if isinstance(rows, dict) and rows.get('message'):
+                            detail = rows['message']
+                            result.setdefault('error', {})['message'] = detail
+                        summary = f'error: {detail}'
                 except Exception as e:
                     result  = {'success': False, 'error': str(e)}
                     summary = f'error: {e}'

@@ -2786,14 +2786,22 @@ async function runCloudInvestigation() {
         let ev; try { ev = JSON.parse(line); } catch { continue; }
         if (ev.type === 'tool_call') {
           const row = document.createElement('div');
-          row.className = 'cve-row';
-          row.innerHTML = `<span class="cve-label">🔧 ${esc(ev.tool)}</span>`;
+          row.className = 'investigate-row';
+          const name = document.createElement('span');
+          name.className = 'tool-name';
+          name.textContent = `🔧 ${ev.tool}`;
+          row.appendChild(name);
           bubble.insertBefore(row, cursor);
           scrollLog();
         } else if (ev.type === 'tool_result') {
-          const rows = bubble.querySelectorAll('.cve-row');
+          const rows = bubble.querySelectorAll('.investigate-row');
           const last = rows[rows.length - 1];
-          if (last) last.innerHTML += ` <span class="cve-val">${esc(ev.summary)}</span>`;
+          if (last) {
+            const val = document.createElement('span');
+            val.className = 'tool-summary';
+            val.textContent = ev.summary;
+            last.appendChild(val);
+          }
           scrollLog();
         } else if (ev.type === 'final') {
           finalText = ev.text || '';
