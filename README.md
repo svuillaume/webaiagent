@@ -21,8 +21,8 @@ Works with **FortiCNAPP** (and any CNAPP platform built on Lacework).
 | 📋 **Compliance Reports** | Generates compliance PDF reports (CIS, NIST, PCI-DSS, SOC 2, HIPAA, ISO 27001, and 50+ frameworks) |
 | 📊 **Risk Hunting / LQL** | Run saved LQL queries, or describe what you want to find in plain English — the AI writes the query, validates it, and retries up to 9 times if it fails. Falls back to a scoping conversation if the objective needs clarification. |
 | 🔎 **Cloud Investigation** | Open-ended natural-language question → an AI agent loop calls read-only FortiCNAPP tools across up to 6 iterations to answer it, streaming progress as it goes |
-| 🔬 **Unified Attack Threat Surface** | CVE lookup with a computed CVSS/EPSS/exposure risk-profile radar chart, FortiGuard outbreak scrape, and a full AI-generated incident report |
-| 🧾 **Incident-style Reports** | LQL and CVE reports follow a consistent Status → Affected Resources → Remediation → Critical Context → Compliance Deadlines → Preserve Evidence structure, with exact CLI fix commands |
+| 🔬 **Unified Attack Threat Surface** | CVE lookup with a computed CVSS/EPSS/exposure risk-profile radar chart, FortiGuard outbreak scrape, and a minimalist AI-generated report table |
+| 🧾 **Minimalist Reports** | LQL and CVE reports are a single Markdown table — Finding, What It Means / Why It Matters, Next Steps to Remediate (exact CLI fix commands where remediation applies) — one row per matching resource, no boilerplate sections |
 | ⚖️ **Regulatory Obligations** | Reports auto-detect cloud regions and inject applicable frameworks: PIPEDA (Canada), GDPR/NIS2 (EU), NIST/HIPAA/CIRCIA (US), UK GDPR, APAC privacy laws, and ISO 27001 baseline |
 | 📋 **Copy / PDF Export** | One-click copy and PDF export on every AI response |
 | 💾 **TokenSaving compression** *(optional)* | Route chat through a local token-compression proxy ([Headroom](https://github.com/chopratejas/headroom) under the hood) to cut token usage on large report-generation prompts — toggle live from a badge in the panel, no restart needed |
@@ -50,7 +50,7 @@ Think of it as a security engineer sitting next to you while you browse. You ope
 | 🧾 **SBOM Gen** | Generates a Software Bill of Materials (SPDX/SARIF/GitLab formats) for code on the current page or a GitHub repo |
 | 📋 **Compliance Report** | Generates a compliance PDF report, opened in a new tab |
 | 📊 **Risk Hunting** | Three tabs in one drawer — run saved **LQL** queries, describe an objective in plain English for **✨ Assisted Investigation** (AI writes/validates/retries the LQL query), or ask an open-ended question for **🔎 Cloud Investigation** (an AI agent loop over read-only FortiCNAPP tools) |
-| 🔬 **Unified Attack Threat Surface** | CVE lookup with a computed risk-profile radar, PoC/patch signals from FortiGuard, CISA KEV, and a full incident report with regulatory obligations |
+| 🔬 **Unified Attack Threat Surface** | CVE lookup with a computed risk-profile radar, PoC/patch signals from FortiGuard, CISA KEV, and a minimalist report table with regulatory obligations |
 
 **Admin menu** *(gear/routing dot icon)* — AI gateway and model pickers, the **📊 TokenSaving Dashboard** (if configured), and the **💬 Community Feed** link.
 
@@ -78,9 +78,9 @@ Same shape for every flow — Chat/TL;DR, CodeScan, SBOM, Compliance, Risk Hunti
    FortiCNAPP + FortiGuard + NVD + EPSS + CISA KEV queried in parallel
    (Assisted Investigation: LQL generated → validated → retried up to 9x → run → REST-enriched)
      ↓
-5. INCIDENT REPORT COMES BACK
-   Status → Affected Resources → Remediation (exact commands) →
-   Critical Context (+ risk-profile radar) → Compliance Deadlines → Preserve Evidence
+5. REPORT COMES BACK
+   One table — Finding | What It Means / Why It Matters | Next Steps to Remediate
+   (exact commands where remediation applies; risk-profile radar chart above it for CVE reports)
      ↓
 6. ACT ON IT
    Copy the fix commands · ⬇ Export PDF · ask a follow-up right in the same chat
@@ -90,18 +90,18 @@ Every step after (1) happens without leaving the tab you're on. Setup is a one-t
 
 ---
 
-## Incident Reports — Structure
+## Reports — Structure
 
-Every LQL ("Advanced Analytics") and CVE ("Attack Surface") report follows the same structure, minimal and engineering-focused rather than a board-deck format:
+Every LQL ("Risk Hunting") and CVE ("Attack Surface") report follows the same structure: one Markdown table, nothing else — minimal and engineering-focused rather than a board-deck format.
 
-1. **Status** — severity + "N of total (pct%)" one-liner
-2. **Affected Resources** — a Markdown table, one row per resource, with a 🔴/🟠/🟡 status column
-3. **Remediation — Execute NOW** — exact commands per resource (real names/IDs, never placeholders), grouped by account/region, plus a **Verify** block to confirm the fix took effect
-4. **Critical Context** — facts only from the data actually provided (log gaps, confirmed reachability, related findings); for CVE reports this includes a computed risk-profile radar chart (Attack Vector, Privileges Required, Scope Impact, EPSS Percentile, Internet Exposure)
-5. **Compliance Deadlines** — only when a regulated region is affected: a table of Regulation / Due / Owner / Action
-6. **Preserve Evidence** — what to retain for this finding type and why
+| Finding | What It Means / Why It Matters | Next Steps to Remediate |
+|---|---|---|
 
-Sections without supporting data are omitted rather than padded out.
+- **Finding** — the resource/finding itself, real name/ID from the data, one row each. Every matching resource gets a row — no sampling, no truncation, no splitting across multiple tables.
+- **What It Means / Why It Matters** — one plain-language sentence: what it is, and the severity/exposure context if applicable. A short factual description for pure inventory questions with no actual risk.
+- **Next Steps to Remediate** — one concrete action; an exact command where remediation applies (real names/IDs, never placeholders), or "None — informational only" for pure inventory.
+- A regulatory notification obligation (PIPEDA, GDPR, etc.) that applies to the affected region(s) gets its own row rather than a separate section.
+- CVE reports get a pre-computed risk-profile radar chart (Attack Vector, Privileges Required, Scope Impact, EPSS Percentile, Internet Exposure) directly above the table.
 
 ---
 
@@ -116,7 +116,7 @@ When you search for a CVE, six sources are queried in parallel:
 5. **EPSS (first.org)** — exploit probability score and percentile
 6. **CISA KEV** — whether actively exploited in the wild
 
-All six feed into the incident report's **Critical Context** section, including a 5-axis risk-profile radar chart (Attack Vector, Privileges Required, Scope Impact, EPSS Percentile, Internet Exposure) computed directly from the CVSS vector and exposure data — not left to the model to draw.
+All six feed into the report table and its 5-axis risk-profile radar chart (Attack Vector, Privileges Required, Scope Impact, EPSS Percentile, Internet Exposure), computed directly from the CVSS vector and exposure data — not left to the model to draw.
 
 **Regulatory obligations** are injected based on the cloud region of each affected host:
 
@@ -165,7 +165,7 @@ serve.py runs query for real
   ↓ passes
 Rows returned → enriched with REST API (alerts, inventory, S3 sensitivity tags)
   ↓
-Claude writes incident report
+Claude writes the report (one row per resource, see Reports — Structure above)
 ```
 
 The datasource catalog comes from the live `lacework` CLI, not a static reference file — the earlier approach parsed a PDF-derived text dump that truncated ~29% of long datasource names mid-word (column-width cutoff during extraction). The static file is kept only as a fallback if the CLI is ever unavailable.
