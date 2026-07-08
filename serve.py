@@ -287,7 +287,10 @@ CORS = {
     'Access-Control-Allow-Headers': 'Content-Type, x-api-key, anthropic-version, Authorization, x-portkey-api-key, helicone-auth',
 }
 
+RESPONSE_CACHE_TTL_SECONDS = 3600  # 1 hour — how long a cached LQL/investigate response is reused
+
 _lql_cache: dict = {}
+_investigate_cache: dict = {}
 _fg_cache: dict = {'items': [], 'ts': 0.0}
 
 def _fg_outbreaks_cached():
@@ -1647,15 +1650,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, json.dumps({'error': 'prompt is required'}).encode())
             return
 
+        # Cache lookup — normalize to lowercase, collapse whitespace, same as
+        # /lql/generate. A fresh cache hit replays the exact recorded event stream
+        # (tool_call/tool_result/final) instead of re-running the agent loop.
+        cache_key = ' '.join(prompt.lower().split())
+        cached = _investigate_cache.get(cache_key)
+        if cached and datetime.now(timezone.utc).timestamp() - cached['cached_at'] < RESPONSE_CACHE_TTL_SECONDS:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-ndjson')
+            for k, v in CORS.items():
+                self.send_header(k, v)
+            self.end_headers()
+            for ev in cached['events']:
+                self.wfile.write((json.dumps(ev) + '\n').encode())
+                self.wfile.flush()
+            return
+
         self.send_response(200)
         self.send_header('Content-Type', 'application/x-ndjson')
         for k, v in CORS.items():
             self.send_header(k, v)
         self.end_headers()
 
+        recorded_events = []
+
         def emit(obj):
+            recorded_events.append(obj)
             self.wfile.write((json.dumps(obj) + '\n').encode())
             self.wfile.flush()
+
+        def cache_success():
+            _investigate_cache[cache_key] = {
+                'events':    recorded_events,
+                'cached_at': datetime.now(timezone.utc).timestamp(),
+            }
 
         try:
             _mcp_ensure_started()
@@ -1741,6 +1769,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not tool_use_blocks:
                 text = ''.join(b.get('text', '') for b in content_blocks if b.get('type') == 'text')
                 emit({'type': 'final', 'text': text or 'No answer was generated.'})
+                cache_success()
                 return
 
             messages.append({'role': 'assistant', 'content': content_blocks})
@@ -1811,6 +1840,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         text = ''.join(b.get('text', '') for b in resp_data.get('content', []) if b.get('type') == 'text')
         emit({'type': 'final', 'text': text or f'Investigation exceeded the {MAX_ITERATIONS}-step limit and no answer could be synthesized — try narrowing the objective.'})
+        cache_success()
 
     def serve_lql_generate(self):
         try:
@@ -1824,10 +1854,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, json.dumps({'error': 'objective is required'}).encode())
             return
 
-        # Cache lookup — normalize to lowercase, collapse whitespace
+        # Cache lookup — normalize to lowercase, collapse whitespace. Full response
+        # (including live rows), reused for RESPONSE_CACHE_TTL_SECONDS — after that
+        # it's treated as a miss so security data doesn't go stale indefinitely.
         cache_key = ' '.join(objective.lower().split())
-        if cache_key in _lql_cache:
-            cached = dict(_lql_cache[cache_key])
+        entry = _lql_cache.get(cache_key)
+        if entry and datetime.now(timezone.utc).timestamp() - entry['cached_at'] < RESPONSE_CACHE_TTL_SECONDS:
+            cached = dict(entry['response'])
             cached['cached'] = True
             self.send_json(200, json.dumps(cached).encode())
             return
@@ -2420,11 +2453,11 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 except Exception:
                     pass  # best-effort — never fail the response
 
-            # Cache only queryId+queryText — skip rows to keep endpoint cache small
+            # Cache the full response (including rows) for RESPONSE_CACHE_TTL_SECONDS
             if result.get('queryText') and result.get('queryId') != 'USE_CVE_TAB':
                 _lql_cache[cache_key] = {
-                    'queryId':   result['queryId'],
-                    'queryText': result['queryText'],
+                    'response':  dict(result),
+                    'cached_at': datetime.now(timezone.utc).timestamp(),
                 }
 
             self.send_json(200, json.dumps(result).encode())
