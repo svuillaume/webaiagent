@@ -6,9 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FortiAIScout (Alpha — early-stage, expect rapid change) is a browser-native AI security assistant: a Chrome extension (side panel) backed by a local Python HTTP server (`serve.py`). The extension sends chat through an AI gateway (Bifrost, Portkey, LiteLLM, or Helicone) to Claude. Web search uses Anthropic's native `web_search_20260209` server-side tool — no local search instance required. `serve.py` is a CORS proxy for FortiCNAPP security tools.
 
-Two other components live in this repo but are separate from the extension/`serve.py` pair above:
+One other component lives in this repo but is separate from the extension/`serve.py` pair above:
 - `vendor/mcp_forticnapp/` — a vendored (one-time copy, not a live dependency) MCP server that exposes FortiCNAPP's API as tools; `serve.py` spawns it as a subprocess for the Cloud Investigation feature (see Architecture below). Has its own README with its own architecture notes — read that before touching files under this directory.
-- `forticnapp-risk-triage/` — a Claude Code skill (`SKILL.md` + `evals/`) documenting FortiCNAPP agentless risk-triage methodology. Content/reference material, not code called by `serve.py` or the extension.
 
 
 ## Running the backend
