@@ -95,6 +95,26 @@ const setStatus = (text, state = '') => {
   el('status').className   = state;
 };
 
+// Cloud Investigation is a multi-turn native tool-calling loop — it needs the model to return
+// proper tool_use blocks on every turn. Non-Claude models routed through this gateway (confirmed
+// with deepseek-v4-pro) can instead leak their own tool-call markup as literal text, which then
+// shows up as a garbled, irrelevant-looking "final answer" with no indication anything went
+// wrong. serve.py rejects this server-side too — this just fails visibly before the user tries.
+function updateInvestigateAvailability() {
+  const isClaude = el('model').value.startsWith('claude');
+  const tip = isClaude ? '' :
+    'Cloud Investigation requires a Claude model — switch models in Admin → LLM Model to enable it.';
+  const tab = document.querySelector('.lql-tab[data-tab="investigate"]');
+  if (tab) {
+    tab.classList.toggle('lw-disabled', !isClaude);
+    tab.title = tip;
+  }
+  el('investigate-btn').disabled    = !isClaude;
+  el('investigate-btn').title       = tip;
+  el('investigate-prompt').disabled = !isClaude;
+  el('investigate-prompt').title    = tip;
+}
+
 // ── Storage ───────────────────────────────────────────────────────────────
 // session = auto-cleared on Chrome close (keeps credentials out of disk); local = survives restarts (safe for non-secret prefs)
 chrome.storage.session.get(['bf_url', 'bf_key', 'bf_key2'], ({ bf_url, bf_key, bf_key2 }) => {
@@ -109,6 +129,7 @@ chrome.storage.local.get(['bf_model', 'bf_gateway'], ({ bf_model, bf_gateway }) 
     el('gateway').value = bf_gateway;
     applyGatewayProfile(bf_gateway);
   }
+  updateInvestigateAvailability();
 });
 
 function applyGatewayProfile(gw) {
@@ -233,6 +254,7 @@ key2Input.addEventListener('change', () => saveSession('bf_key2', key2Input));
 el('model').addEventListener('change', () => {
   const model = el('model').value;
   chrome.storage.local.set({ bf_model: model });
+  updateInvestigateAvailability();
   // Persist to .env's ANTHROPIC_DEFAULT_MODEL so server-side calls (/lql/generate) stay in
   // sync with whatever model the user is chatting with — best-effort, non-blocking.
   fetch(BASE_URL + '/model', {

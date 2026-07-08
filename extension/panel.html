@@ -790,6 +790,7 @@ body {
 }
 .lql-tab:hover { color: var(--text); }
 .lql-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.lql-tab.lw-disabled { opacity: .35; cursor: not-allowed; filter: grayscale(1); pointer-events: none; }
 
 .lql-pane { display: none; }
 .lql-pane.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
@@ -1228,7 +1229,7 @@ a.ext-link:hover { color: var(--accent-d); }
   background: var(--border);
 }
 
-/* Radar/spider chart — visual risk profile in the CVE "Critical Context" section (new, additive) */
+/* Radar/spider chart — visual risk profile prepended to the CVE report table (new, additive) */
 .rpt-radar {
   margin: 8px 0;
   padding: 8px 6px 4px;

@@ -1685,6 +1685,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 'cached_at': datetime.now(timezone.utc).timestamp(),
             }
 
+        # Cloud Investigation is a multi-turn native tool-calling loop (see `tools=` in
+        # _call_gateway below) — it depends on the model returning proper Anthropic
+        # tool_use content blocks on every turn. Non-Claude models routed through this
+        # gateway (confirmed with deepseek-v4-pro) can instead leak their own native
+        # tool-call markup as literal text, which then gets shown as if it were the
+        # final answer — a garbled, irrelevant-looking report with no indication
+        # anything went wrong. Fail clearly up front instead.
+        if not MODEL.startswith('claude'):
+            emit({'type': 'final', 'text':
+                  f'Cloud Investigation requires a Claude model — "{MODEL}" doesn\'t reliably '
+                  'support the multi-turn tool-calling this feature depends on. Switch to a '
+                  'Claude model (Admin → LLM Model) and try again.'})
+            return
+
         try:
             _mcp_ensure_started()
         except (RuntimeError, TimeoutError) as e:
@@ -1813,6 +1827,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             items = rows
                         elif isinstance(rows, dict) and isinstance(rows.get('data'), list):
                             items = rows['data']
+                        elif rows is None:
+                            # `data: null` — e.g. a 204 No Content response because no rows
+                            # matched (often caused by a bad `filters`/`returns` value on the
+                            # call). Must NOT fall through to the "single object" branch below,
+                            # which would misreport this as "1 result(s)" and hide the fact
+                            # nothing matched — exactly the false-positive the model can't
+                            # recover from (it has no signal its own call needs correcting).
+                            items = []
                         else:
                             items = None
                         pagination = result.get('pagination') or {}
