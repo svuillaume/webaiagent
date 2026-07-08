@@ -210,7 +210,7 @@ And if you're a **FortiCNAPP** customer, I can plug directly into your environme
 
 Here's what I can help with:
 
-• 📄 **Read** / **TL;DR** — pull this page into context, or get a quick plain-English summary · [example](https://github.com/svuillaume/webaiagent#what-does-it-do)
+• 🌐 **Translate** — select text on the page, translate it to English · **TL;DR** — get a quick plain-English page summary · [example](https://github.com/svuillaume/webaiagent#what-does-it-do)
 • 🖱 **Select text → right-click → "Ask AI about selection"** — works on any page, even PDFs · [example](https://github.com/svuillaume/webaiagent#what-does-it-do)
 • 🛡 **Scan Code** — SCA + SAST on code from this page or a GitHub repo · [example](https://github.com/svuillaume/webaiagent#features)
   - SAST: Go · Java · JavaScript · PHP · Python · TypeScript
@@ -669,15 +669,31 @@ async function readCurrentPage() {
   return result;
 }
 
+async function readSelectedText() {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) throw new Error('No active tab found');
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func:   () => ({
+      title: document.title,
+      url:   location.href,
+      text:  (window.getSelection()?.toString() || '').trim(),
+    }),
+  });
+  return result;
+}
+
 const pageCtx = page => `[Page context]\nTitle: ${page.title}\nURL: ${page.url}\n\n${page.text}`;
 
-// Shared wrapper for page-button actions: disables btn, restores on finish
-async function withPage(btnId, fn) {
+// Shared wrapper for page-button actions: disables btn, restores on finish.
+// `reader` defaults to reading the whole page; pass readSelectedText for
+// actions that only need the current text selection.
+async function withPage(btnId, fn, reader = readCurrentPage) {
   const btn = el(btnId);
   btn.disabled = true;
   setStatus('reading page…', 'busy');
   try {
-    await fn(await readCurrentPage());
+    await fn(await reader());
   } catch (e) {
     appendTurn('system', `Could not read page: ${e.message}`);
     setStatus('error', 'err');
@@ -824,15 +840,22 @@ el('fcnapp-community').addEventListener('click', () => {
   setInterval(refresh, 60 * 1000);
 })();
 
-el('read-page').addEventListener('click', () => withPage('read-page', page => {
+el('read-page').addEventListener('click', () => withPage('read-page', async page => {
   if (guardBusy()) return;
-  history.push({ role: 'user',      content: pageCtx(page) });
-  history.push({ role: 'assistant', content: 'Page loaded. Ask me anything about it.' });
-  appendTurn('system', `📄 "${page.title}"`);
-  appendTurn('ai',     'Page loaded. Ask me anything about it.');
+  if (!page.text) {
+    appendTurn('system', 'No text selected — select some text on the page, then click Translate.');
+    setStatus('no selection', 'err');
+    return;
+  }
+  history.push({ role: 'user', content:
+    `[Selected text from "${page.title}"]\n\n${page.text}\n\n` +
+    'If the text above is not already in English, translate it to English. ' +
+    'If it is already in English, say so briefly instead of translating. ' +
+    'Reply with just the translation (or that brief note) — no extra commentary.' });
+  appendTurn('system', `🌐 Selected text from "${page.title}"`);
   el('read-page').classList.add('active');
-  setStatus('page loaded', 'ok');
-}));
+  await send(true); // user turn already pushed above; silent avoids re-appending it
+}, readSelectedText));
 
 el('tldr').addEventListener('click', () => withPage('tldr', async page => {
   if (guardBusy()) return;
