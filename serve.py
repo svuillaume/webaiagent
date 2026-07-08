@@ -1722,7 +1722,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "it commonly means the filter value itself didn't match anything. Never "
             "conclude 'not found' or 'zero results' from a filtered query whose "
             "filter value you weren't certain of; retry unfiltered or with an "
-            "observed value before reporting an absence as fact."
+            "observed value before reporting an absence as fact.\n\n"
+            "OUTPUT FORMAT: when the objective concerns a set of resources (instances, "
+            "buckets, accounts, findings, etc.), your final answer MUST include one "
+            "single markdown table listing EVERY matching resource individually — one "
+            "row per resource, its ID as the first column (e.g. instance ID, resource "
+            "ID), plus whatever other columns are relevant (account, region, type, "
+            "status). Never split the same resource type across several small "
+            "per-account or per-region tables, and never fall back to prose/bullets "
+            "for some resources while tabulating others — one table, every matching "
+            "resource, no omissions. If 55 resources match, the table has 55 rows. A "
+            "short summary (counts, notable patterns) may follow the table, but the "
+            "table itself must be complete over everything the tool calls returned."
         )
         messages = [{'role': 'user', 'content': prompt}]
 
