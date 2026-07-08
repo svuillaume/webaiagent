@@ -2,7 +2,10 @@
 
 // ── Constants ─────────────────────────────────────────────────────────────
 const BASE_URL       = 'http://localhost:45321';
-const MAX_TOKENS     = 4096;
+// 8192, not 4096: the Risk Hunting / CVE report template now requires one row per matching
+// resource (up to the 200-row sample cap in the LQL report call sites below) — a low cap here
+// truncates the table mid-row, silently dropping resources from the report.
+const MAX_TOKENS     = 8192;
 const PAGE_MAX_CHARS = 12000;
 const SYSTEM_PROMPT = `You are a security engineer. For security findings, answer in plain Markdown — no exec-summary prose, no filler, no walls of text.
 
@@ -266,7 +269,7 @@ el('model').addEventListener('change', () => {
 
 // ── Markdown renderer ─────────────────────────────────────────────────────
 // Escape before transform so model output cannot inject HTML.
-// Radar/spider chart for a small set of 0-100 risk axes (e.g. CVE Critical Context).
+// Radar/spider chart for a small set of 0-100 risk axes (e.g. CVE risk profile).
 // Pure SVG, no deps — geometry computed here rather than trusting the model to hand-draw it.
 function renderRadarChart(axes, values, title) {
   const n = axes.length;
@@ -2081,66 +2084,45 @@ function _regulatoryContext(regions = []) {
   });
   lines.push(
     ``,
-    `IMPORTANT: Populate the report template's "## Compliance Deadlines" table using the frameworks/obligations`,
-    `above — one row per distinct obligation, columns: Regulation | Due | Owner | Action.`,
-    `Due dates must be computed from the actual discovery/exposure date given in the data — never invent one.`,
-    `If a breach cannot be ruled out, add a row for the notification obligation and state the deadline explicitly.`,
-    `Also add a "Preserve Evidence" bullet for anything these frameworks require retaining (e.g. breach record,`,
-    `access logs, forensic timeline) that isn't already covered by the finding-specific evidence bullets.`,
+    `IMPORTANT: Add one table row per distinct obligation above (Finding = regulation/obligation name).`,
+    `What It Means / Why It Matters = the obligation itself, including anything it requires preserving`,
+    `(breach record, access logs, forensic timeline). Next Steps to Remediate = the concrete deadline`,
+    `and action, computed from the actual discovery/exposure date given in the data — never invent one.`,
+    `If a breach cannot be ruled out, add a row for the notification obligation with its deadline stated explicitly.`,
   );
   return lines.join('\n');
 }
 
-// Shared incident-report template for FortiCNAPP Risk Hunting (LQL) and
+// Shared minimalist template for FortiCNAPP Risk Hunting (LQL) and
 // Unified Attack Threat Surface (CVE) reports. This OVERRIDES the system prompt's
 // default Objective/Findings/Fix structure per its own precedence rule.
-const INCIDENT_REPORT_TEMPLATE = `Use EXACTLY this Markdown template. Fill every placeholder from the data provided below; omit
-a whole section if it doesn't apply (e.g. no "Compliance Deadlines" section when no regulated
-region is affected, no "Critical Context" bullet you don't have data for). Never invent facts,
-dates, counts, or context not present in the data provided.
+const INCIDENT_REPORT_TEMPLATE = `Use EXACTLY this format — a single Markdown table, nothing else. No title, no status/severity
+line, no separate remediation section, no other headings or sections before or after the table
+(a regulatory radar/risk-profile chart may precede it if one is supplied below — nothing else).
+Never invent facts, dates, counts, or context not present in the data provided.
 
-# <one-line finding title>
+| Finding | What It Means / Why It Matters | Next Steps to Remediate |
+|---|---|---|
 
-## Status
-**<CRITICAL|HIGH|MEDIUM|LOW>** — <N> of <total> (<pct>%) <one-line description of what's wrong>.
-
-## Affected <resource type — e.g. Buckets / Instances / Roles / Hosts>
-Markdown table, one row per resource. Last column is Status, using 🔴/🟠/🟡 for at-a-glance severity:
-| <col> | <col> | <col> | Status |
-|---|---|---|---|
-
-## Remediation — Execute NOW
-\`\`\`bash
-# group commands with a "# Account X (region)" comment header when there's more than one account/region
-<exact command per resource — real resource names/IDs from the data, never placeholders>
-\`\`\`
-
-**Verify:**
-\`\`\`bash
-<a command or loop that confirms the fix actually took effect>
-\`\`\`
-
-## Critical Context
-- **<label>**: <fact — only from data actually provided: log/audit gaps, confirmed reachability tests, missing
-  classification tags, related prior findings, etc. Omit this whole section if there is no such context.>
-
-## Compliance Deadlines
-Markdown table — only if a regulatory obligation applies to the affected region(s):
-| Regulation | Due | Owner | Action |
-|---|---|---|---|
-
-## Preserve Evidence
-- <bullet list of exactly what to preserve for this finding type and why>
-
----
-**Report Generated**: <today's date, given below> | **Discovery Date**: <from data if known, else omit this field> | **Exposure Window**: <from data if known, else omit this field>`;
+Rules:
+- One row per matching resource — real names/IDs from the data as the Finding, never a placeholder.
+- Include EVERY matching resource from the data as its own row — never sample, truncate, or split
+  into multiple tables. If 196 resources match, the table has 196 rows.
+- "What It Means / Why It Matters": one plain-language sentence — what the resource/finding is and
+  why it matters (severity/exposure context if applicable). For pure inventory with no actual risk,
+  a short factual description is enough.
+- "Next Steps to Remediate": one concrete action. Use an exact command where remediation applies
+  (real resource names/IDs, never placeholders). Use "None — informational only" when there is
+  nothing to remediate (e.g. plain inventory/listing objectives).
+- If a regulatory notification obligation applies to the affected region(s) (given below), add it
+  as its own row (Finding = the obligation/regulation name) rather than a separate section.`;
 
 function buildReportInstructions() {
   const today = new Date().toISOString().slice(0, 10);
   return `${INCIDENT_REPORT_TEMPLATE}\n\nToday's date: ${today}`;
 }
 
-// Computed (not model-authored) risk profile for the CVE report's "Critical Context" section —
+// Computed (not model-authored) risk profile chart prepended to the CVE report's table —
 // geometry is unreliable coming from an LLM, so we derive the 5 axes straight from the CVSS
 // vector / EPSS / exposure data and hand the model a ready-made ```radar block to embed verbatim.
 function buildCveRadarBlock(d, intel) {
@@ -2252,17 +2234,21 @@ function buildCveAnalysisPrompt(d, fgOutbreaks) {
     buildReportInstructions(),
     ``,
     `Report-specific guidance:`,
-    `- Title: "CVE ${d.cveId} Exposure"`,
-    `- Status stats: ${d.total_affected} hosts affected, ${d.internet_exposed} internet-exposed, CVSS ${intel.nvd?.cvssV3Score ?? '?'}, EPSS ${intel.epss?.score ?? '?'}.`,
-    `- "Affected Hosts" table: full hostname (never truncate), CSP (AWS/Azure/GCP), instance ID, instance type, CSP account ID, region, VPC, severity, internet-exposed flag if applicable. Use "unknown" only if the data field is genuinely blank — never omit the column.`,
-    `- Remediation: exact patch command per host/package (e.g. apt-get install <pkg>=<version>, yum update, docker pull <image>:<tag>).`,
-    `- Discovery Date / Exposure Window are unknown for CVE data — omit those two fields from the report footer.`,
+    `- Finding column: hostname (full, never truncate) plus CSP (AWS/Azure/GCP), instance ID, instance`,
+    `  type, CSP account ID, region, VPC in parentheses — e.g. "prod-db-01 (aws, i-0abc123, m5.large,`,
+    `  123456789012, us-east-1, vpc-0def456)". Use "unknown" only if the field is genuinely blank —`,
+    `  never omit it from the string. One row per affected host.`,
+    `- What It Means / Why It Matters column: severity, whether internet-exposed, CVSS ${intel.nvd?.cvssV3Score ?? '?'} /`,
+    `  EPSS ${intel.epss?.score ?? '?'} context for this host's exposure.`,
+    `- Next Steps to Remediate column: exact patch command for this host/package (e.g. apt-get install`,
+    `  <pkg>=<version>, yum update, docker pull <image>:<tag>) — real package/version from the data.`,
   );
   if (radarBlock) {
     lines.push(
-      `- "Critical Context" section: the very first line must be this exact fenced block, byte-for-byte, unchanged (it is a pre-computed risk-profile chart — do not edit the JSON):`,
+      `- The very first line of the whole answer must be this exact fenced block, byte-for-byte,`,
+      `  unchanged (it is a pre-computed risk-profile chart — do not edit the JSON), followed directly`,
+      `  by the table — no bullets or prose after it:`,
       radarBlock,
-      `  After that block, continue with the normal bullet list explaining what each axis means for this CVE.`,
     );
   }
   if (intel.kev?.inKev)             lines.push(`NOTE: This CVE is in CISA KEV — actively exploited. Urgency is NOW.`);
@@ -2799,15 +2785,22 @@ el('lql-run').addEventListener('click', async () => {
     renderLqlTable(resultsEl, rows, total, query.id);
     appendResultCard('📊', `LQL: ${query.id} — ${statusEl.textContent}`, resultsEl);
 
-    // Plain-text summary for AI context
+    // Plain-text summary for AI context — capped at 100 rows so a full one-row-per-resource
+    // table (required by INCIDENT_REPORT_TEMPLATE) reliably finishes within the gateway's
+    // observed output-token ceiling instead of getting cut off mid-table (verified empirically:
+    // ~120 rows is where a 4096-token completion runs out for this template's row format).
     const keys       = Object.keys(rows[0]);
-    const sample     = rows.slice(0, 50).map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
+    const sampleRows = rows.slice(0, 100);
+    const sample     = sampleRows.map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
+    const coverage   = rows.length > sampleRows.length
+      ? `\n\n(Only the first ${sampleRows.length} of ${rows.length} matching rows are listed above — the table must have exactly these ${sampleRows.length} rows, and must note it is a partial sample if the objective implies completeness.)`
+      : '';
     const regionKeys = keys.filter(k => /region/i.test(k));
     const lqlRegions = [...new Set(rows.flatMap(r => regionKeys.map(k => r[k])).filter(Boolean))];
     if (guardBusy()) return;
     history.push({
       role: 'user',
-      content: `Security finding data from LQL query "${query.id}" — ${count} rows:\n\n${sample}${formatApiEnrichment(data.api_enrichment)}\n\n${buildReportInstructions()}${_regulatoryContext(lqlRegions)}`,
+      content: `Security finding data from LQL query "${query.id}" — ${count} rows:\n\n${sample}${coverage}${formatApiEnrichment(data.api_enrichment)}\n\n${buildReportInstructions()}${_regulatoryContext(lqlRegions)}`,
     });
     send(true); // auto-triggers executive analysis; user turn already pushed above
   } catch (e) {
@@ -3215,15 +3208,23 @@ el('lql-gen-btn').addEventListener('click', async () => {
     renderLqlTable(resultsEl, rows, total, label);
     appendResultCard('📊', `LQL: ${label} — ${statusEl.textContent}`, resultsEl);
 
-    const keys    = Object.keys(rows[0]);
-    const sample  = rows.slice(0, 50).map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
+    // Capped at 100 rows so a full one-row-per-resource table (required by
+    // INCIDENT_REPORT_TEMPLATE) reliably finishes within the gateway's observed output-token
+    // ceiling instead of getting cut off mid-table (verified empirically: ~120 rows is where a
+    // 4096-token completion runs out for this template's row format).
+    const keys       = Object.keys(rows[0]);
+    const sampleRows = rows.slice(0, 100);
+    const sample     = sampleRows.map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
+    const coverage   = rows.length > sampleRows.length
+      ? `\n\n(Only the first ${sampleRows.length} of ${rows.length} matching rows are listed above — the table must have exactly these ${sampleRows.length} rows, and must note it is a partial sample if the objective implies completeness.)`
+      : '';
     // Extract regions from row data for regulatory context
     const regionKeys = keys.filter(k => /region/i.test(k));
     const lqlRegions = [...new Set(rows.flatMap(r => regionKeys.map(k => r[k])).filter(Boolean))];
     if (guardBusy()) return;
     history.push({
       role: 'user',
-      content: `Security finding data from LQL query "${label}" — ${count} rows:\n\n${sample}${formatApiEnrichment(data.api_enrichment)}\n\n${buildReportInstructions()}${_regulatoryContext(lqlRegions)}`,
+      content: `Security finding data from LQL query "${label}" — ${count} rows:\n\n${sample}${coverage}${formatApiEnrichment(data.api_enrichment)}\n\n${buildReportInstructions()}${_regulatoryContext(lqlRegions)}`,
     });
     send(true);
   } catch (e) {
