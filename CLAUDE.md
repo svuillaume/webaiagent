@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 FortiAIScout (Alpha — early-stage, expect rapid change) is a browser-native AI security assistant: a Chrome extension (side panel) backed by a local Python HTTP server (`serve.py`). The extension sends chat through an AI gateway (Bifrost, Portkey, LiteLLM, or Helicone) to Claude. Web search uses Anthropic's native `web_search_20260209` server-side tool — no local search instance required. `serve.py` is a CORS proxy for FortiCNAPP security tools.
 
+Two other components live in this repo but are separate from the extension/`serve.py` pair above:
+- `vendor/mcp_forticnapp/` — a vendored (one-time copy, not a live dependency) MCP server that exposes FortiCNAPP's API as tools; `serve.py` spawns it as a subprocess for the Cloud Investigation feature (see Architecture below). Has its own README with its own architecture notes — read that before touching files under this directory.
+- `forticnapp-risk-triage/` — a Claude Code skill (`SKILL.md` + `evals/`) documenting FortiCNAPP agentless risk-triage methodology. Content/reference material, not code called by `serve.py` or the extension.
+
 
 ## Running the backend
 
@@ -42,7 +46,7 @@ Copy `.env.tpl` → `.env` and fill in:
 - `HEADROOM_DASHBOARD_URL` — optional; the browser-reachable address for the same proxy, opened directly by the extension (`http://127.0.0.1:8787` in both setups — `HEADROOM_URL`'s Docker value only resolves inside containers, never in the browser)
 - `HEADROOM_ENABLED` — `1`/`0`; whether chat requests currently route through Headroom. Not meant to be hand-edited — toggled from the extension's routing badge (`POST /headroom/toggle`), which writes it back here.
 
-FortiCNAPP credentials: `~/.lacework.toml` (from `lacework configure`). Mounted read-only into the container.
+FortiCNAPP credentials: `~/.lacework.toml` (from `lacework configure`), mounted read-only into the container. `_lw_creds()` in `serve.py` resolves credentials at every call site — `LW_ACCOUNT`/`LW_API_KEY`/`LW_API_SECRET` env vars first (if all three are set), falling back to parsing `~/.lacework.toml`'s `[default]`-equivalent fields. `LW_PROFILE` (`_lw_profile()`) is always `''` (no `--profile` flag passed to the `lacework` CLI) — env-var creds authenticate directly with no profile, and the toml fallback only supports a `[default]`-named profile (run `lacework configure` with no `--profile` flag).
 
 `serve.py` loads `.env` at startup; `.env` values **override** real environment variables. Restart required after any change — except `HEADROOM_ENABLED` and `ANTHROPIC_DEFAULT_MODEL`, which take effect live via their respective `POST` endpoints without a restart (see Non-obvious runtime behaviour below).
 
@@ -61,8 +65,17 @@ Chrome Extension (extension/)
   │
   └─ Security tools ► serve.py  localhost:45321
                            ├──► FortiCNAPP REST API  (via lacework CLI)
-                           └──► lacework CLI  (SCA/SAST, SBOM)
+                           ├──► lacework CLI  (SCA/SAST, SBOM, LQL validate/run)
+                           ├──► FortiGuard  (outbreak RSS + page scrape, cached 30 min)
+                           ├──► NVD / EPSS / CISA KEV  (CVE intel aggregation)
+                           └──► vendor/mcp_forticnapp subprocess  (Cloud Investigation — see below)
 ```
+
+**Cloud Investigation** (`POST /mcp/investigate`) is a separate server-side agent loop from `/lql/generate`. `serve.py` lazily spawns `vendor/mcp_forticnapp` (a vendored, one-time copy of an external MCP server — see `vendor/mcp_forticnapp/README.md`) as a subprocess and speaks newline-delimited JSON-RPC 2.0 over its stdin/stdout — a hand-rolled client, not the `mcp` SDK, to keep `serve.py`'s own imports stdlib-only. `_mcp_ensure_started()`/`_mcp_call_tool()` (bottom of `serve.py`) serialize all access behind `_mcp_lock`, so at most one request is ever in flight and respawn-on-crash is just "poll() is not None → spawn again." The loop calls read-only FortiCNAPP tools (`ENABLE_MUTATION_TOOLS` hardcoded `false`, never read from the request) for up to 6 iterations, streaming `{"type":"tool_call"|"tool_result"|"final"}` NDJSON chunks back to the browser. Design doc: `docs/superpowers/specs/2026-07-07-cloud-investigation-design.md`. In the extension this is the "🔎 Cloud Investigation" tab inside the Risk Hunting drawer, alongside saved LQL queries and "✨ Assisted Investigation" (`/lql/generate`) — `extension/panel.js` renders both onto the same two-part output layout.
+
+Because `vendor/mcp_forticnapp` is vendored (not a live dependency), Docker-only: the Dockerfile `pip install`s it into the container so `serve.py` can `subprocess.Popen(['python3', '-m', 'forticnapp_mcp.main'])`; there is no local-dev-mode (`python3 serve.py` directly) fallback. Future upstream changes to `mcp_forticnapp` need manual re-vendoring, not a sync step.
+
+**Response caching** — both `/lql/generate` and `/mcp/investigate` cache successful responses for `RESPONSE_CACHE_TTL_SECONDS` (1 hour), keyed on the lowercased/whitespace-collapsed prompt (`_lql_cache`, `_investigate_cache` near the top of `serve.py`). A cache hit replays the recorded event stream verbatim rather than re-running the LLM/agent loop.
 
 Note: the request path above is for FortiAIScout's own chat traffic (WebAiAgent → Headroom → Bifrost → Claude, when `HEADROOM_ENABLED=1`). Claude Code — the CLI tool used to develop this repo — is a separate consumer of Claude and talks directly to the Anthropic API; it does not go through this project's `serve.py`, Headroom, or Bifrost.
 
@@ -87,7 +100,12 @@ Note: the request path above is for FortiAIScout's own chat traffic (WebAiAgent 
 | GET | `/lql/queries` | List `.yaml` files from `LQL_QUERIES_DIR` |
 | POST | `/lql/run` | Execute LQL against FortiCNAPP |
 | POST | `/lql/cve` | CVE cross-reference: hosts + containers |
-| POST | `/lql/generate` | Plain-English → LQL via Claude |
+| POST | `/lql/generate` | Plain-English → LQL via Claude (cached 1hr, see below) |
+| GET | `/fortiguard/outbreaks` | FortiGuard outbreak RSS (cached 30 min) |
+| GET | `/fortiguard/outbreak-by-cve` | Outbreak alerts matching a CVE |
+| GET | `/fortiguard/outbreak-detail` | Scrape a FortiGuard outbreak page for PoC/patch/timeline signals |
+| GET | `/fortiguard/cve-intel` | Aggregate: EPSS + CISA KEV + NVD CVSS + FortiGuard for one CVE |
+| POST | `/mcp/investigate` | Cloud Investigation: agent loop over read-only FortiCNAPP MCP tools (cached 1hr, see below) |
 | GET | `/headroom/stats` | Lifetime token savings from the Headroom sidecar (`HEADROOM_URL`) |
 | POST | `/headroom/toggle` | Switch chat routing between direct-to-gateway and via-Headroom |
 | POST | `/model` | Persist the extension's model picker as `ANTHROPIC_DEFAULT_MODEL` |
@@ -132,6 +150,6 @@ The extension reads its initial config from `GET /config` on `localhost:45321`.
 
 ## Key constraints
 
-- `serve.py` must remain zero-dependency (Python stdlib only). No pip installs.
+- `serve.py` itself must remain zero-dependency (Python stdlib only) — no pip installs *imported by* `serve.py`. The Dockerfile does `pip install` the vendored `vendor/mcp_forticnapp` package (for Cloud Investigation), but `serve.py` only ever reaches it via `subprocess.Popen`, never `import`, so this constraint holds for the file itself.
 - The Dockerfile installs the lacework CLI via its install script during build — lacework SCA component is pre-installed to avoid download delays at runtime.
 - The extension's CSP (`manifest.json`) restricts `connect-src` to `localhost:45321`, `https://api.github.com`, `https://raw.githubusercontent.com`, and `https://*` — any new fetch target must be added there.

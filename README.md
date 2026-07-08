@@ -295,7 +295,7 @@ Everything stays on your machine.
 | Gateway URL + API key | `.env` file (local only) | Never sent anywhere except your own AI gateway |
 | Chat history | Browser memory | Cleared when side panel closes |
 | Page content | Browser memory | Never written to disk |
-| FortiCNAPP credentials | `~/.lacework.toml` | Standard lacework CLI credential file |
+| FortiCNAPP credentials | `.env` (`LW_ACCOUNT`/`LW_API_KEY`/`LW_API_SECRET`), or `~/.lacework.toml` as a fallback | Never sent anywhere except FortiCNAPP's own API |
 | FortiGuard threat data | Not stored | RSS feed proxied through local server, cached 30 min |
 
 `serve.py` listens on `localhost` only — not reachable from the internet or other devices.
@@ -327,7 +327,7 @@ python3 serve.py        # http://localhost:45321
 | `HEADROOM_DASHBOARD_URL` | *(optional)* The browser-reachable address for the same proxy — always `http://127.0.0.1:8787` |
 | `HEADROOM_ENABLED` | `1`/`0` — whether chat currently routes through Headroom. Toggled live from the extension's routing badge, not meant to be hand-edited. |
 
-FortiCNAPP credentials come from `~/.lacework.toml` (created by `lacework configure`).
+FortiCNAPP credentials: set `LW_ACCOUNT` / `LW_API_KEY` / `LW_API_SECRET` in `.env` (Docker builds and runs entirely off these — no host `~/.lacework.toml` required, so a fresh clone on any machine works without depending on a pre-existing local `lacework configure` setup). If those three aren't set, `serve.py` falls back to parsing `~/.lacework.toml`, which must use the `[default]` profile — run `lacework configure` with no `--profile` flag to create one under that name.
 
 ### Backend API endpoints (`localhost:45321`)
 

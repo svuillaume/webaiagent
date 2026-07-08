@@ -15,7 +15,12 @@ HEADROOM_URL=http://headroom:8787
 HEADROOM_DASHBOARD_URL=http://127.0.0.1:8787
 # HEADROOM_ENABLED=0
 
-# FortiCNAPP credentials — alternative to ~/.lacework.toml (useful for CI/PoV)
-# LW_ACCOUNT=your-account
-# LW_API_KEY=your-api-key
-# LW_API_SECRET=your-api-secret
+# FortiCNAPP credentials — required for Docker (the SCA component install at build
+# time, and all runtime lacework CLI calls, authenticate directly off these three;
+# no host ~/.lacework.toml needed). Get these from the FortiCNAPP/Lacework console
+# under Settings > API Keys. If left unset, serve.py falls back to parsing
+# ~/.lacework.toml — which must use the [default] profile (run `lacework configure`
+# with no --profile flag).
+LW_ACCOUNT=your-account
+LW_API_KEY=your-api-key
+LW_API_SECRET=your-api-secret

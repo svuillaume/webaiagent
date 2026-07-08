@@ -3,7 +3,9 @@ services:
     build:
       context: .
       secrets:
-        - lacework_toml
+        - lw_account
+        - lw_api_key
+        - lw_api_secret
     container_name: webai-serve
     ports:
       - "45321:45321"
@@ -60,5 +62,13 @@ volumes:
   headroom-state:
 
 secrets:
-  lacework_toml:
-    file: ~/.lacework.toml
+  # Sourced from LW_ACCOUNT/LW_API_KEY/LW_API_SECRET in .env — used only to install
+  # the lacework SCA component at build time (see Dockerfile). Runtime credential
+  # resolution is separate (serve.py's _lw_creds(): these same env vars first, then
+  # ~/.lacework.toml as a fallback).
+  lw_account:
+    environment: LW_ACCOUNT
+  lw_api_key:
+    environment: LW_API_KEY
+  lw_api_secret:
+    environment: LW_API_SECRET

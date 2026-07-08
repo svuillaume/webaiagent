@@ -2618,18 +2618,16 @@ def _lw_creds():
     return account, api_key, api_secret
 
 def _lw_profile():
-    if env.get('LW_ACCOUNT') and env.get('LW_API_KEY') and env.get('LW_API_SECRET'):
-        return ''
-    toml_path = os.path.expanduser('~/.lacework.toml')
-    if not os.path.exists(toml_path):
-        return ''
-    first_section = ''
-    for line in open(toml_path):
-        line = line.strip()
-        if line.startswith('[') and line.endswith(']'):
-            first_section = line[1:-1]
-            break
-    return '' if first_section == 'default' else first_section
+    # '' means "don't pass --profile at all", which makes the lacework CLI use its
+    # own built-in default profile. LW_ACCOUNT/LW_API_KEY/LW_API_SECRET (if set)
+    # authenticate directly with no profile involved. The ~/.lacework.toml fallback
+    # always targets the [default] profile specifically — run `lacework configure`
+    # with no --profile flag to create one — rather than auto-detecting whatever
+    # profile name happens to be first in the file, which only worked for whichever
+    # machine's toml already used that exact name.
+    return ''
+
+LW_PROFILE = _lw_profile()
 
 LW_PROFILE = _lw_profile()
 account, api_key, api_secret = _lw_creds()
