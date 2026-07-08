@@ -1722,8 +1722,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     result = _mcp_call_tool(block['name'], block.get('input', {}))
                     rows = result.get('data')
                     if result.get('success'):
-                        count = len(rows) if isinstance(rows, list) else '1'
-                        summary = f'{count} result(s)'
+                        # FortiCNAPP list/search endpoints wrap rows in an envelope
+                        # ({"paging": {...}, "data": [...]}), so `rows` itself is a
+                        # dict, not a list — drill into it for the real row count.
+                        # Fall back to the MCP layer's own pagination.rows (set even
+                        # when `data` isn't a plain list, e.g. a single-object result).
+                        if isinstance(rows, list):
+                            items = rows
+                        elif isinstance(rows, dict) and isinstance(rows.get('data'), list):
+                            items = rows['data']
+                        else:
+                            items = None
+                        pagination = result.get('pagination') or {}
+                        if items is not None:
+                            count = str(len(items))
+                        elif pagination.get('rows') is not None:
+                            count = str(pagination['rows'])
+                        else:
+                            count = '1'
+                        total = pagination.get('total_rows')
+                        summary = (f'{count} of {total} result(s)' if total and str(total) != count
+                                   else f'{count} result(s)')
                     else:
                         # FortiCNAPP's actual reason (e.g. "startTime/endTime span too
                         # wide") usually lands in `data`, not the generic wrapper
