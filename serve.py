@@ -18,6 +18,7 @@ POST /lql/generate  → plain-English → LQL via Claude
 GET  /headroom/stats  → lifetime token savings from a local Headroom proxy (HEADROOM_URL)
 POST /headroom/toggle → switch chat requests between direct-to-gateway and via-Headroom
 POST /model           → persist the extension's model picker as ANTHROPIC_DEFAULT_MODEL
+POST /mcp/investigate → Cloud Investigation: agent loop over read-only FortiCNAPP MCP tools
 
 Usage: python3 serve.py  →  http://localhost:45321
 """
@@ -581,6 +582,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_headroom_toggle()
         elif self.path == '/model':
             self.serve_model_update()
+        elif self.path == '/mcp/investigate':
+            self.serve_mcp_investigate()
         else:
             self.send_error(404)
 
@@ -1632,6 +1635,102 @@ class Handler(http.server.BaseHTTPRequestHandler):
             }).encode())
         except Exception:
             self.send_json(200, json.dumps({'available': False}).encode())
+
+    def serve_mcp_investigate(self):
+        try:
+            payload = json.loads(self._read_body())
+        except json.JSONDecodeError:
+            self.send_error(400, 'Expected JSON {prompt}')
+            return
+        prompt = (payload.get('prompt') or '').strip()
+        if not prompt:
+            self.send_json(400, json.dumps({'error': 'prompt is required'}).encode())
+            return
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/x-ndjson')
+        for k, v in CORS.items():
+            self.send_header(k, v)
+        self.end_headers()
+
+        def emit(obj):
+            self.wfile.write((json.dumps(obj) + '\n').encode())
+            self.wfile.flush()
+
+        try:
+            _mcp_ensure_started()
+        except RuntimeError as e:
+            emit({'type': 'final', 'text': f'Cloud Investigation is unavailable: {e}'})
+            return
+
+        if not DIRECT_UPSTREAM or not VIRTUAL_KEY:
+            emit({'type': 'final', 'text': 'Gateway URL or virtual key not configured.'})
+            return
+
+        system_prompt = (
+            "You are a read-only FortiCNAPP cloud security investigator. Use the "
+            "available tools to answer the user's objective by querying their real "
+            "tenant data. Call as many tools as needed to gather evidence, then give "
+            "a clear, evidence-grounded narrative answer citing the specific "
+            "resources/accounts/regions you found. Never fabricate data not returned "
+            "by a tool call. If a tool call fails, note the failure and try a "
+            "different approach rather than guessing at an answer."
+        )
+        messages = [{'role': 'user', 'content': prompt}]
+
+        MAX_ITERATIONS = 6
+        for _ in range(MAX_ITERATIONS):
+            body = json.dumps({
+                'model': MODEL or 'claude-haiku-4-5',
+                'max_tokens': 4096,
+                'system': system_prompt,
+                'messages': messages,
+                'tools': _mcp_state['tools'],
+            }).encode()
+            req = urllib.request.Request(
+                current_upstream().rstrip('/') + '/v1/messages', data=body, method='POST',
+                headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY,
+                          'anthropic-version': '2023-06-01'})
+            try:
+                resp = urllib.request.urlopen(req, timeout=90)
+                resp_data = json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                err_body = e.read()
+                try:
+                    msg = json.loads(err_body).get('error', {}).get('message', err_body.decode()[:400])
+                except Exception:
+                    msg = err_body.decode()[:400]
+                emit({'type': 'final', 'text': f'Investigation failed: {msg}'})
+                return
+
+            content_blocks = resp_data.get('content', [])
+            tool_use_blocks = [b for b in content_blocks if b.get('type') == 'tool_use']
+
+            if not tool_use_blocks:
+                text = ''.join(b.get('text', '') for b in content_blocks if b.get('type') == 'text')
+                emit({'type': 'final', 'text': text or 'No answer was generated.'})
+                return
+
+            messages.append({'role': 'assistant', 'content': content_blocks})
+            tool_results = []
+            for block in tool_use_blocks:
+                emit({'type': 'tool_call', 'tool': block['name'], 'input': block.get('input', {})})
+                try:
+                    result = _mcp_call_tool(block['name'], block.get('input', {}))
+                    rows = result.get('data')
+                    count = len(rows) if isinstance(rows, list) else ('1' if result.get('success') else '0')
+                    summary = f'{count} result(s)' if result.get('success') else f"error: {result.get('error')}"
+                except (RuntimeError, TimeoutError) as e:
+                    result  = {'success': False, 'error': str(e)}
+                    summary = f'error: {e}'
+                emit({'type': 'tool_result', 'tool': block['name'], 'summary': summary})
+                tool_results.append({
+                    'type': 'tool_result', 'tool_use_id': block['id'],
+                    'content': json.dumps(result)[:20000],  # keep the model's own context bounded
+                })
+            messages.append({'role': 'user', 'content': tool_results})
+
+        emit({'type': 'final', 'text': f'Investigation exceeded the {MAX_ITERATIONS}-step limit — try narrowing the objective.'})
 
     def serve_lql_generate(self):
         try:
