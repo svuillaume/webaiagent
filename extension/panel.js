@@ -2765,6 +2765,16 @@ el('investigate-prompt').addEventListener('keydown', e => {
   if (e.key === 'Enter') runCloudInvestigation();
 });
 
+// Cloud Investigation output matches Assisted Investigation's two-part layout:
+// a results card (via appendResultCard, same .lql-query-preview/.lql-row-note
+// classes as the "Generated LQL" preview) built once the full tool-call trail
+// is known, followed by the narrative answer as a plain chat bubble. Progress
+// during the stream shows only in the drawer's status/boat spinner, same as
+// Assisted Investigation's "running…" + boat while /lql/generate is in flight
+// — the trail itself isn't revealed incrementally in the log because
+// appendResultCard's History-pane copy is a one-time clone, not a live
+// mirror, so building the card before the trail is complete would leave the
+// History pane permanently missing later steps.
 async function runCloudInvestigation() {
   const prompt = el('investigate-prompt').value.trim();
   if (!prompt) return;
@@ -2772,20 +2782,18 @@ async function runCloudInvestigation() {
 
   const btn      = el('investigate-btn');
   const statusEl = el('investigate-status');
+  const boatEl   = el('investigate-boat');
+  const trailEl  = el('investigate-wake-trail');
+
   btn.disabled = true;
   statusEl.textContent = 'investigating…';
   statusEl.className   = '';
-
-  el('lql-panel').classList.remove('open');
-  history.push({ role: 'user', content: prompt });
-  appendTurn('user', prompt);
+  startSailing(boatEl, trailEl);
 
   busy = true;
   el('send').disabled = true;
-  const bubble = appendTurn('ai');
-  const cursor = Object.assign(document.createElement('span'), { className: 'cursor' });
-  bubble.appendChild(cursor);
 
+  const steps = [];
   let finalText = '';
   try {
     const res = await fetch(BASE_URL + '/mcp/investigate', {
@@ -2808,64 +2816,60 @@ async function runCloudInvestigation() {
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch { continue; }
         if (ev.type === 'tool_call') {
-          const row = document.createElement('div');
-          row.className = 'investigate-row';
-          const name = document.createElement('span');
-          name.className = 'tool-name';
-          name.textContent = `🔧 ${ev.tool}`;
-          row.appendChild(name);
-          bubble.insertBefore(row, cursor);
-          scrollLog();
+          steps.push({ tool: ev.tool, summary: null });
+          statusEl.textContent = `🔧 ${ev.tool}…`;
         } else if (ev.type === 'tool_result') {
-          const rows = bubble.querySelectorAll('.investigate-row');
-          const last = rows[rows.length - 1];
-          if (last) {
-            const val = document.createElement('span');
-            val.className = 'tool-summary';
-            val.textContent = ev.summary;
-            last.appendChild(val);
-          }
-          scrollLog();
+          const last = steps[steps.length - 1];
+          if (last) last.summary = ev.summary;
         } else if (ev.type === 'final') {
           finalText = ev.text || '';
         }
       }
     }
-    cursor.remove();
+
+    el('lql-panel').classList.remove('open');
+
+    // Results card — same visual language as the "Generated LQL" collapsible
+    // preview (.lql-query-preview / .lql-row-note), just listing tool calls
+    // instead of a query string.
+    const resultsEl = document.createElement('div');
+    resultsEl.className = 'lql-result-body';
+    const details = document.createElement('details');
+    details.className = 'lql-query-preview';
+    details.open = true;
+    const summaryEl = document.createElement('summary');
+    summaryEl.textContent = `▶ ${steps.length} tool call${steps.length !== 1 ? 's' : ''}`;
+    details.appendChild(summaryEl);
+    steps.forEach(s => {
+      const row = document.createElement('div');
+      row.className = 'lql-row-note';
+      row.textContent = `🔧 ${s.tool} — ${s.summary || '(no result)'}`;
+      details.appendChild(row);
+    });
+    resultsEl.appendChild(details);
+    appendResultCard('🔎', `Cloud Investigation: ${prompt}`, resultsEl);
+
+    // Narrative answer, as a plain AI turn — the model's answer is already
+    // final (no second LLM call needed, unlike Assisted Investigation's
+    // send(true)), so render it directly the same way a static AI message
+    // (e.g. the greeting) renders: markdown + copy/PDF buttons, no visible
+    // user bubble, matching Assisted Investigation's own report step.
     if (finalText) {
-      // Use a plain appendChild here, NOT setRendered(bubble, ...) — setRendered
-      // does node.replaceChildren(), which would wipe out the 🔧 tool_call/
-      // tool_result rows already inserted into `bubble` above. The final answer
-      // must be appended after them, not replace them.
-      const node = document.createElement('div');
-      setRendered(node, renderMarkdown(finalText));
-      bubble.appendChild(node);
-      bubble.appendChild(makeCopyBtn(finalText));
-      bubble.appendChild(makePdfBtn(node));
-      // Mirror only the final answer (not the tool-call trail) into the History
-      // pane — matches the existing precedent where readStream()'s searchMarker
-      // is also never mirrored into bubble._allBody.
-      if (bubble._allBody) {
-        const allNode = document.createElement('div');
-        setRendered(allNode, renderMarkdown(finalText));
-        bubble._allBody.appendChild(allNode);
-        bubble._allBody.appendChild(makeCopyBtn(finalText));
-        bubble._allBody.appendChild(makePdfBtn(allNode));
-      }
+      history.push({ role: 'user', content: prompt });
+      history.push({ role: 'assistant', content: finalText });
+      appendTurn('ai', finalText);
     }
-    history.push({ role: 'assistant', content: finalText });
     statusEl.textContent = 'done';
     statusEl.className   = 'ok';
   } catch (err) {
-    cursor.remove();
-    bubble.textContent = `Error: ${err.message}`;
-    history.pop();
-    statusEl.textContent = 'error';
+    statusEl.textContent = `✗ ${err.message}`;
     statusEl.className   = 'err';
+    appendTurn('system', `Cloud Investigation failed: ${err.message}`);
   } finally {
     busy = false;
     el('send').disabled = false;
     btn.disabled = false;
+    stopSailing(boatEl, trailEl);
     scrollLog();
   }
 }
