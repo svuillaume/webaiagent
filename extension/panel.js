@@ -2737,6 +2737,108 @@ el('lql-run').addEventListener('click', async () => {
 
 // ── LQL tab switching ─────────────────────────────────────────────────────────
 
+el('investigate-btn').addEventListener('click', runCloudInvestigation);
+el('investigate-prompt').addEventListener('keydown', e => {
+  if (e.key === 'Enter') runCloudInvestigation();
+});
+
+async function runCloudInvestigation() {
+  const prompt = el('investigate-prompt').value.trim();
+  if (!prompt) return;
+  if (guardBusy()) return;
+
+  const btn      = el('investigate-btn');
+  const statusEl = el('investigate-status');
+  btn.disabled = true;
+  statusEl.textContent = 'investigating…';
+  statusEl.className   = '';
+
+  el('lql-panel').classList.remove('open');
+  history.push({ role: 'user', content: prompt });
+  appendTurn('user', prompt);
+
+  busy = true;
+  el('send').disabled = true;
+  const bubble = appendTurn('ai');
+  const cursor = Object.assign(document.createElement('span'), { className: 'cursor' });
+  bubble.appendChild(cursor);
+
+  let finalText = '';
+  try {
+    const res = await fetch(BASE_URL + '/mcp/investigate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let ev; try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.type === 'tool_call') {
+          const row = document.createElement('div');
+          row.className = 'cve-row';
+          row.innerHTML = `<span class="cve-label">🔧 ${esc(ev.tool)}</span>`;
+          bubble.insertBefore(row, cursor);
+          scrollLog();
+        } else if (ev.type === 'tool_result') {
+          const rows = bubble.querySelectorAll('.cve-row');
+          const last = rows[rows.length - 1];
+          if (last) last.innerHTML += ` <span class="cve-val">${esc(ev.summary)}</span>`;
+          scrollLog();
+        } else if (ev.type === 'final') {
+          finalText = ev.text || '';
+        }
+      }
+    }
+    cursor.remove();
+    if (finalText) {
+      // Use a plain appendChild here, NOT setRendered(bubble, ...) — setRendered
+      // does node.replaceChildren(), which would wipe out the 🔧 tool_call/
+      // tool_result rows already inserted into `bubble` above. The final answer
+      // must be appended after them, not replace them.
+      const node = document.createElement('div');
+      setRendered(node, renderMarkdown(finalText));
+      bubble.appendChild(node);
+      bubble.appendChild(makeCopyBtn(finalText));
+      bubble.appendChild(makePdfBtn(node));
+      // Mirror only the final answer (not the tool-call trail) into the History
+      // pane — matches the existing precedent where readStream()'s searchMarker
+      // is also never mirrored into bubble._allBody.
+      if (bubble._allBody) {
+        const allNode = document.createElement('div');
+        setRendered(allNode, renderMarkdown(finalText));
+        bubble._allBody.appendChild(allNode);
+        bubble._allBody.appendChild(makeCopyBtn(finalText));
+        bubble._allBody.appendChild(makePdfBtn(allNode));
+      }
+    }
+    history.push({ role: 'assistant', content: finalText });
+    statusEl.textContent = 'done';
+    statusEl.className   = 'ok';
+  } catch (err) {
+    cursor.remove();
+    bubble.textContent = `Error: ${err.message}`;
+    history.pop();
+    statusEl.textContent = 'error';
+    statusEl.className   = 'err';
+  } finally {
+    busy = false;
+    el('send').disabled = false;
+    btn.disabled = false;
+    scrollLog();
+  }
+}
+
 document.querySelectorAll('.lql-tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('.lql-tab').forEach(t => t.classList.remove('active'));
