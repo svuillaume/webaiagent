@@ -15,6 +15,9 @@ RUN --mount=type=secret,id=lacework_toml,target=/root/.lacework.toml \
     || echo "WARNING: SCA component install failed — CodeSec/SBOM will be unavailable"
 
 WORKDIR /app
+COPY vendor/mcp_forticnapp/ ./vendor/mcp_forticnapp/
+RUN pip install --no-cache-dir ./vendor/mcp_forticnapp
+
 COPY serve.py chatbox.html FortiCNAPP-LQL_Reference_Guide.txt ./
 COPY extension/ ./extension/
 
