@@ -1776,6 +1776,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             tool_results = []
             for block in tool_use_blocks:
                 emit({'type': 'tool_call', 'tool': block['name'], 'input': block.get('input', {})})
+                items = None  # the row list (flat or nested under data.data), if any — used below to bound the payload
                 try:
                     result = _mcp_call_tool(block['name'], block.get('input', {}))
                     rows = result.get('data')
@@ -1818,7 +1819,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 emit({'type': 'tool_result', 'tool': block['name'], 'summary': summary})
                 tool_results.append({
                     'type': 'tool_result', 'tool_use_id': block['id'],
-                    'content': json.dumps(result)[:20000],  # keep the model's own context bounded
+                    'content': _bound_mcp_tool_result(result, items),
                 })
             messages.append({'role': 'user', 'content': tool_results})
 
@@ -2802,6 +2803,54 @@ def _mcp_call_tool(name, arguments, timeout=60):
             except json.JSONDecodeError:
                 return {'success': not result.get('isError', False), 'data': content[0]['text']}
         return {'success': not result.get('isError', False), 'data': None}
+
+
+def _bound_mcp_tool_result(result, items, limit=20000):
+    """Serialize an MCP tool result for the model's tool_result content,
+    staying under `limit` chars without corrupting the JSON or silently
+    hiding the true row count. A raw string slice lands at an arbitrary byte
+    offset — for a row-shaped payload (e.g. 65 EC2 instances with full
+    resourceConfig) that's almost always mid-row, producing invalid trailing
+    JSON and dropping most rows with no signal that anything was cut. The
+    model then answers from a fraction of the data while believing it saw
+    everything (this is exactly what caused Cloud Investigation to report
+    "2 of 65 instances" for an unfiltered EC2 query).
+    `items` is the row list already extracted by the caller (flat `data`, or
+    nested `data.data` — FortiCNAPP's search envelope shape), or None if the
+    result isn't row-shaped. When present, rows are dropped from the end
+    (binary search for the largest count that still fits) and replaced with
+    a `_truncated` marker naming rows_shown/rows_total, so the model can see
+    it's working from a partial result and react (narrower `returns`,
+    tighter `filters`) instead of quietly under-reporting.
+    """
+    full = json.dumps(result)
+    if len(full) <= limit or not items:
+        return full[:limit]
+
+    total = len(items)
+    nested = isinstance(result.get('data'), dict)
+
+    def render(n):
+        r = dict(result)
+        kept = items[:n]
+        r['data'] = {**result['data'], 'data': kept} if nested else kept
+        r['_truncated'] = {
+            'rows_shown': n, 'rows_total': total,
+            'hint': (f'Only {n} of {total} rows fit the tool-result size budget — '
+                     'this is NOT the full result. Narrow `returns` to fewer fields '
+                     'per row, or add tighter `filters`, to see the rest rather than '
+                     'answering as if these rows were everything.'),
+        }
+        return json.dumps(r)
+
+    lo, hi = 0, total
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(render(mid)) <= limit:
+            lo = mid
+        else:
+            hi = mid - 1
+    return render(lo)
 
 
 import socket as _socket
