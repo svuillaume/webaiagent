@@ -1680,7 +1680,21 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "well-targeted, filtered query over broad unfiltered ones. Time-ranged "
             "endpoints commonly cap the span between startTime/endTime (often 7 or "
             "90 days) — if you don't already know the objective needs history, start "
-            "with a narrow recent window rather than guessing at a wide one."
+            "with a narrow recent window rather than guessing at a wide one.\n\n"
+            "CRITICAL — do not guess filter values cold, and do not trust an empty "
+            "result: FortiCNAPP's own field values (e.g. resourceType) use ITS "
+            "internal taxonomy — lowercase 'service:resource' pairs like "
+            "'ec2:instance' or 's3:bucket' — NOT AWS CloudFormation type strings "
+            "(AWS::EC2::Instance) and NOT Config-style names (AWS_EC2_INSTANCE). If "
+            "you don't already know the exact value, run ONE unfiltered or "
+            "lightly-filtered call first (e.g. by csp/dataset alone) to observe real "
+            "field values in the actual response, THEN filter using a value you "
+            "directly observed. An empty result (0 rows, 204 No Content) after "
+            "applying a guessed filter is NOT evidence the resource doesn't exist — "
+            "it commonly means the filter value itself didn't match anything. Never "
+            "conclude 'not found' or 'zero results' from a filtered query whose "
+            "filter value you weren't certain of; retry unfiltered or with an "
+            "observed value before reporting an absence as fact."
         )
         messages = [{'role': 'user', 'content': prompt}]
 
