@@ -191,8 +191,19 @@ Step 5 "FortiCNAPP — configure credentials (optional)"
 Note "Credentials are stored in ~\.lacework.toml and are needed for LQL, CVE, and compliance."
 
 $TomlPath = "$env:USERPROFILE\.lacework.toml"
-if ((Test-Path $TomlPath) -and (Select-String -Path $TomlPath -Pattern 'api_key' -Quiet)) {
-    $acct = (Select-String -Path $TomlPath -Pattern 'account').Line -replace '.*=\s*"?([^"]+)"?.*','$1'
+# Only look at the first ([...]) profile section — matches _lw_creds() in serve.py,
+# and avoids picking up fields from a different profile if more than one is present.
+$TopSection = $null
+if (Test-Path $TomlPath) {
+    $sectionCount = 0
+    $topLines = foreach ($l in Get-Content $TomlPath) {
+        if ($l -match '^\[') { $sectionCount++; if ($sectionCount -gt 1) { break } }
+        $l
+    }
+    $TopSection = $topLines -join "`n"
+}
+if ($TopSection -and ($TopSection -match 'api_key')) {
+    $acct = ($TopSection -split "`n" | Select-String -Pattern 'account').Line -replace '.*=\s*"?([^"]+)"?.*','$1'
     Info "Credentials already configured (account: $acct)"
     $LwTomlOk = $true
 } elseif ($LwCliOk) {
@@ -234,32 +245,43 @@ if (-not $LwCliOk -or -not $LwTomlOk) {
 # ═══════════════════════════════════════════════════════════════
 Step 6 "Start the AI Agent server"
 # ═══════════════════════════════════════════════════════════════
-Note "Starting serve.py on http://localhost:45321 ..."
-Note "Logs: .\serve.log   Errors: .\serve.err"
-
-$proc = Start-Process $PyCmd -ArgumentList "serve.py" `
-    -NoNewWindow -PassThru `
-    -RedirectStandardOutput "serve.log" `
-    -RedirectStandardError  "serve.err"
-$proc.Id | Out-File ".serve.pid" -Encoding ascii
-
 $ready = $false
-Write-Host ""
-Write-Host "     Waiting for server to start" -NoNewline
-for ($i = 0; $i -lt 20; $i++) {
-    try {
-        $r = Invoke-WebRequest "http://localhost:45321/config" -UseBasicParsing -TimeoutSec 2
-        if ($r.StatusCode -eq 200) { Write-Host " ready!" -ForegroundColor Green; $ready = $true; break }
-    } catch {}
-    Write-Host "." -NoNewline
-    Start-Sleep 1
-}
+$alreadyRunning = $false
+try {
+    $r = Invoke-WebRequest "http://localhost:45321/config" -UseBasicParsing -TimeoutSec 2
+    if ($r.StatusCode -eq 200) { $alreadyRunning = $true }
+} catch {}
 
-if (-not $ready) {
+if ($alreadyRunning) {
+    Info "FortiAIScout is already running on port 45321 — leaving it as is."
+    $ready = $true
+} else {
+    Note "Starting serve.py on http://localhost:45321 ..."
+    Note "Logs: .\serve.log   Errors: .\serve.err"
+
+    $proc = Start-Process $PyCmd -ArgumentList "serve.py" `
+        -NoNewWindow -PassThru `
+        -RedirectStandardOutput "serve.log" `
+        -RedirectStandardError  "serve.err"
+    $proc.Id | Out-File ".serve.pid" -Encoding ascii
+
     Write-Host ""
-    Warn "Server did not respond in 20 seconds."
-    Note "Check .\serve.err for Python errors."
-    Note "Common cause: missing or wrong values in .env"
+    Write-Host "     Waiting for server to start" -NoNewline
+    for ($i = 0; $i -lt 20; $i++) {
+        try {
+            $r = Invoke-WebRequest "http://localhost:45321/config" -UseBasicParsing -TimeoutSec 2
+            if ($r.StatusCode -eq 200) { Write-Host " ready!" -ForegroundColor Green; $ready = $true; break }
+        } catch {}
+        Write-Host "." -NoNewline
+        Start-Sleep 1
+    }
+
+    if (-not $ready) {
+        Write-Host ""
+        Warn "Server did not respond in 20 seconds."
+        Note "Check .\serve.err for Python errors."
+        Note "Common cause: missing or wrong values in .env"
+    }
 }
 
 # ═══════════════════════════════════════════════════════════════

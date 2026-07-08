@@ -27,11 +27,11 @@ info "Python $(python3 --version 2>&1 | cut -d' ' -f2) found"
 # ── Step 1: .env ──────────────────────────────────────────────────────────────
 write_env_key() {
   local key="$1" value="$2"
-  if grep -q "^${key}=" .env 2>/dev/null; then
-    sed -i.bak "s|^${key}=.*|${key}=${value}|" .env && rm -f .env.bak
-  else
-    echo "${key}=${value}" >> .env
-  fi
+  awk -v k="$key" -v v="$value" '
+    $0 ~ "^" k "=" { print k "=" v; done=1; next }
+    { print }
+    END { if (!done) print k "=" v }
+  ' .env > .env.tmp && mv .env.tmp .env
 }
 
 load_env() {
@@ -84,7 +84,7 @@ else
   echo ""
   ask "Install the lacework CLI now? [y/N]"
   read -rp "  " install_lw
-  if [[ "${install_lw,,}" == "y" ]]; then
+  if [[ "$install_lw" =~ ^[Yy]$ ]]; then
     info "Installing lacework CLI..."
     curl -sL https://raw.githubusercontent.com/lacework/go-sdk/main/cli/install.sh | bash
     if command -v lacework >/dev/null 2>&1; then
@@ -99,8 +99,11 @@ fi
 
 # ── Step 4: lacework credentials ──────────────────────────────────────────────
 TOML="${HOME}/.lacework.toml"
-if [ -f "$TOML" ] && grep -q 'api_key' "$TOML" && grep -q 'api_secret' "$TOML"; then
-  ACCOUNT=$(grep 'account' "$TOML" | head -1 | cut -d= -f2 | tr -d ' "')
+# Only look at the first ([...]) profile section — matches _lw_creds() in serve.py,
+# and avoids picking up fields from a different profile if more than one is present.
+TOP_SECTION=$( [ -f "$TOML" ] && awk '/^\[/{n++} n<=1' "$TOML" )
+if [ -n "$TOP_SECTION" ] && echo "$TOP_SECTION" | grep -q 'api_key' && echo "$TOP_SECTION" | grep -q 'api_secret'; then
+  ACCOUNT=$(echo "$TOP_SECTION" | grep 'account' | head -1 | cut -d= -f2 | tr -d ' "')
   info "FortiCNAPP credentials found (account: ${ACCOUNT})"
   LW_TOML_OK=true
 else
@@ -109,7 +112,7 @@ else
     echo ""
     ask "Configure FortiCNAPP credentials now? [y/N]"
     read -rp "  " cfg_lw
-    if [[ "${cfg_lw,,}" == "y" ]]; then
+    if [[ "$cfg_lw" =~ ^[Yy]$ ]]; then
       lacework configure
       if [ -f "$TOML" ] && grep -q 'api_key' "$TOML"; then
         info "Credentials saved to ~/.lacework.toml"

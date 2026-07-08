@@ -1723,6 +1723,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "conclude 'not found' or 'zero results' from a filtered query whose "
             "filter value you weren't certain of; retry unfiltered or with an "
             "observed value before reporting an absence as fact.\n\n"
+            "COUNTING ACCURACY: once you know the exact field value to filter on "
+            "(from the discovery call above), make exactly ONE precisely-filtered "
+            "call for the actual resource list, with a narrow `returns` (only the "
+            "fields you need) so the whole result fits in one page. Do NOT run "
+            "multiple broad/unfiltered calls and manually merge or eyeball-deduplicate "
+            "overlapping result sets yourself — that is exactly how resources get "
+            "double-counted or silently dropped. If a result genuinely spans multiple "
+            "pages, follow its `page_url`/pagination cursor exactly, page by page, "
+            "rather than issuing separate unrelated broad queries and reconciling "
+            "them after the fact. Every count and every row in your final table must "
+            "trace back to actual tool_result data, not arithmetic or deduplication "
+            "you performed in your head.\n\n"
             "OUTPUT FORMAT: when the objective concerns a set of resources (instances, "
             "buckets, accounts, findings, etc.), your final answer MUST include one "
             "single markdown table listing EVERY matching resource individually — one "
@@ -2619,8 +2631,16 @@ def _lw_creds():
     toml_path = os.path.expanduser('~/.lacework.toml')
     if not os.path.exists(toml_path):
         return '', '', ''
+    # Only read the first ([...]) profile section — a toml with multiple profiles
+    # would otherwise mix fields from different accounts together.
+    past_first_section = False
     for line in open(toml_path):
         line = line.strip()
+        if line.startswith('['):
+            if past_first_section:
+                break
+            past_first_section = True
+            continue
         if line.startswith('account')    and not account:
             account    = line.split('=',1)[1].strip().strip('"')
         elif line.startswith('api_key')   and not api_key:
@@ -2631,12 +2651,12 @@ def _lw_creds():
 
 def _lw_profile():
     # '' means "don't pass --profile at all", which makes the lacework CLI use its
-    # own built-in default profile. LW_ACCOUNT/LW_API_KEY/LW_API_SECRET (if set)
-    # authenticate directly with no profile involved. The ~/.lacework.toml fallback
-    # always targets the [default] profile specifically — run `lacework configure`
-    # with no --profile flag to create one — rather than auto-detecting whatever
-    # profile name happens to be first in the file, which only worked for whichever
-    # machine's toml already used that exact name.
+    # own built-in default profile resolution. LW_ACCOUNT/LW_API_KEY/LW_API_SECRET
+    # (if set) authenticate directly with no profile involved. The ~/.lacework.toml
+    # fallback (_lw_creds() above) reads the first ([...]) profile section in the
+    # file — `lacework configure` names that section after the account, not
+    # literally "default" — so this only matches the CLI's own no --profile
+    # resolution when the toml has a single profile.
     return ''
 
 LW_PROFILE = _lw_profile()
