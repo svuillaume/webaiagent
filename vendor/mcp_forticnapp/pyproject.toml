@@ -27,6 +27,7 @@ dev = [
 
 [project.scripts]
 forticnapp-mcp = "forticnapp_mcp.main:run"
+forticnapp-mcp-http = "forticnapp_mcp.http_server:run"
 forticnapp-mcp-setup = "forticnapp_mcp.setup_cli:main"
 
 [build-system]
