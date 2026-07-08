@@ -13,17 +13,21 @@ Works with **FortiCNAPP** (and any CNAPP platform built on Lacework).
 | Feature | Description |
 |---|---|
 | 💬 **AI Chat** | Security-engineer-focused AI assistant with automatic web search for up-to-date information |
-| 📖 **Read Page** | Loads the current webpage into context so you can ask questions about it |
-| ⚡ **TL;DR** | Instant plain-English summary of any page |
+| 🌐 **Translate** | Select text on the page → translates it to English (no-op if it's already English) |
+| 📝 **TL;DR** | Instant plain-English summary of any page |
 | 🖱 **Selection-to-chat** | Right-click any selected text (including inside Chrome's built-in PDF viewer) → "Ask AI about selection" to bring it straight into the chat box |
 | 🛡 **Code Scanner** | Scans code on the current page or a GitHub repo for vulnerabilities, misconfigurations, and exposed secrets |
+| 🧾 **SBOM Generator** | Generates a Software Bill of Materials for code on the current page or a GitHub repo — SPDX (json/tag/yaml), SARIF, or GitLab JSON |
 | 📋 **Compliance Reports** | Generates compliance PDF reports (CIS, NIST, PCI-DSS, SOC 2, HIPAA, ISO 27001, and 50+ frameworks) |
-| 📊 **AI Assist / LQL** | Describe what you want to find — the AI writes the LQL query, validates it, and retries up to 9 times if it fails. Falls back to a scoping conversation if the objective needs clarification. |
-| 🔬 **Attack Surface Analyzer** | CVE lookup with a computed CVSS/EPSS/exposure risk-profile radar chart, FortiGuard outbreak scrape, and a full AI-generated incident report |
+| 📊 **Risk Hunting / LQL** | Run saved LQL queries, or describe what you want to find in plain English — the AI writes the query, validates it, and retries up to 9 times if it fails. Falls back to a scoping conversation if the objective needs clarification. |
+| 🔎 **Cloud Investigation** | Open-ended natural-language question → an AI agent loop calls read-only FortiCNAPP tools across up to 6 iterations to answer it, streaming progress as it goes |
+| 🔬 **Unified Attack Threat Surface** | CVE lookup with a computed CVSS/EPSS/exposure risk-profile radar chart, FortiGuard outbreak scrape, and a full AI-generated incident report |
 | 🧾 **Incident-style Reports** | LQL and CVE reports follow a consistent Status → Affected Resources → Remediation → Critical Context → Compliance Deadlines → Preserve Evidence structure, with exact CLI fix commands |
 | ⚖️ **Regulatory Obligations** | Reports auto-detect cloud regions and inject applicable frameworks: PIPEDA (Canada), GDPR/NIS2 (EU), NIST/HIPAA/CIRCIA (US), UK GDPR, APAC privacy laws, and ISO 27001 baseline |
 | 📋 **Copy / PDF Export** | One-click copy and PDF export on every AI response |
 | 💾 **TokenSaving compression** *(optional)* | Route chat through a local token-compression proxy ([Headroom](https://github.com/chopratejas/headroom) under the hood) to cut token usage on large report-generation prompts — toggle live from a badge in the panel, no restart needed |
+
+> 📈 **FAZ** (FortiAnalyzer) and ☁️ **FortiCASB-SSPM** buttons are visible in the toolbar but are "coming soon" placeholders — not yet functional.
 
 ---
 
@@ -34,20 +38,21 @@ Think of it as a security engineer sitting next to you while you browse. You ope
 **General AI assistant (works on any webpage)**
 
 - **Chat** — ask the AI anything; it searches the web automatically when it needs fresh information
-- **Read this page** — loads the page you're on so you can ask questions about it
+- **Translate** — select text on the page, then click Translate to get it in English
 - **TL;DR** — plain-English summary of any page in seconds
 - **Select text → right-click → "Ask AI about selection"** — works on regular pages and inside Chrome's PDF viewer
-- **📊 TokenSaving Dashboard** *(inside the FortiCNAPP menu)* — opens the token-savings dashboard, if configured
 
-**Cloud security tools (requires FortiCNAPP)**
+**Cloud security tools (under the FortiCNAPP menu — requires FortiCNAPP)**
 
 | Button | What it does |
 |---|---|
-| 🛡 **Scan Code** | Scans code on the current page or a GitHub repo for security vulnerabilities and exposed secrets |
-| 📋 **Compliance** | Generates a compliance PDF report, opened in a new tab |
-| 📊 **AI Assist** | Describe what you want to find — AI writes the LQL query, self-heals through up to 9 retries, and generates an incident report |
-| 🔬 **Attack Surface** | CVE lookup with a computed risk-profile radar, PoC/patch signals from FortiGuard, CISA KEV, and a full incident report with regulatory obligations |
-| 💬 **Community** | Opens the FortiCNAPP community feed |
+| 🛡 **CodeScan** | Scans code on the current page or a GitHub repo for security vulnerabilities and exposed secrets |
+| 🧾 **SBOM Gen** | Generates a Software Bill of Materials (SPDX/SARIF/GitLab formats) for code on the current page or a GitHub repo |
+| 📋 **Compliance Report** | Generates a compliance PDF report, opened in a new tab |
+| 📊 **Risk Hunting** | Three tabs in one drawer — run saved **LQL** queries, describe an objective in plain English for **✨ Assisted Investigation** (AI writes/validates/retries the LQL query), or ask an open-ended question for **🔎 Cloud Investigation** (an AI agent loop over read-only FortiCNAPP tools) |
+| 🔬 **Unified Attack Threat Surface** | CVE lookup with a computed risk-profile radar, PoC/patch signals from FortiGuard, CISA KEV, and a full incident report with regulatory obligations |
+
+**Admin menu** *(gear/routing dot icon)* — AI gateway and model pickers, the **📊 TokenSaving Dashboard** (if configured), and the **💬 Community Feed** link.
 
 > If a button is greyed out, hover over it — a tooltip explains what's needed to enable it.
 
@@ -55,7 +60,7 @@ Think of it as a security engineer sitting next to you while you browse. You ope
 
 ## End-to-End Workflow
 
-Same shape for every flow — Chat/TL;DR, Code Scan, Compliance, AI Assist, Attack Surface. Using Attack Surface as the concrete example:
+Same shape for every flow — Chat/TL;DR, CodeScan, SBOM, Compliance, Risk Hunting, Unified Attack Threat Surface. Using Unified Attack Threat Surface as the concrete example:
 
 ```
 1. SETUP (once)
@@ -65,12 +70,13 @@ Same shape for every flow — Chat/TL;DR, Code Scan, Compliance, AI Assist, Atta
    Click the toolbar icon — side panel opens alongside whatever tab you're on
      ↓
 3. ASK
-   🔰 FortiCNAPP → 🔬 Attack Surface → type "CVE-2021-44228" → 🔎 Search
-   (AI Assist: 📊 AI Assist → "S3 buckets without encryption" → ▶ Run Query)
+   FortiCNAPP ▼ → Unified Attack Threat Surface → type "CVE-2021-44228" → 🔎 Search
+   (Risk Hunting: FortiCNAPP ▼ → Risk Hunting → ✨ Assisted Investigation tab →
+    "S3 buckets without encryption" → ▶ Run Query)
      ↓
 4. THE AI DOES THE WORK
    FortiCNAPP + FortiGuard + NVD + EPSS + CISA KEV queried in parallel
-   (AI Assist: LQL generated → validated → retried up to 9x → run → REST-enriched)
+   (Assisted Investigation: LQL generated → validated → retried up to 9x → run → REST-enriched)
      ↓
 5. INCIDENT REPORT COMES BACK
    Status → Affected Resources → Remediation (exact commands) →
@@ -125,7 +131,15 @@ All six feed into the incident report's **Critical Context** section, including 
 
 ---
 
-## AI Assist / LQL Generator — How it works
+## Risk Hunting — LQL, Assisted Investigation & Cloud Investigation
+
+The **Risk Hunting** drawer has three tabs:
+
+- **LQL** — pick from your saved `.yaml` queries and run them directly
+- **✨ Assisted Investigation** — describe an objective in plain English; the AI writes and self-heals an LQL query (see below)
+- **🔎 Cloud Investigation** — ask an open-ended question; an AI agent loop calls read-only FortiCNAPP tools (up to 6 iterations) to answer it, streaming its tool calls and results live as it works. Unlike Assisted Investigation, this isn't limited to what LQL can express — it can chain multiple tool calls together to answer questions LQL alone can't.
+
+### Assisted Investigation — How it works
 
 ```
 User types objective
@@ -195,7 +209,7 @@ If you're running `python3 serve.py` directly instead of Docker, you'll need Hea
 | **Google Chrome** | Any recent version |
 | **Python 3** | Pre-installed on Mac. Windows: [python.org](https://python.org) — tick "Add to PATH" |
 | **AI Gateway URL + key** | Provided by your IT team or Fortinet contact. Key usually starts with `sk-bf-…` |
-| **FortiCNAPP account** | Only needed for security tools (Scan Code, Compliance, Analytics, Attack Surface) |
+| **FortiCNAPP account** | Only needed for security tools (CodeScan, SBOM, Compliance, Risk Hunting, Unified Attack Threat Surface) |
 
 You do **not** need to be a developer. You do **not** need Docker.
 
@@ -343,6 +357,7 @@ FortiCNAPP credentials: set `LW_ACCOUNT` / `LW_API_KEY` / `LW_API_SECRET` in `.e
 | POST | `/lql/run` | Execute LQL query |
 | POST | `/lql/cve` | CVE attack surface: affected hosts + containers |
 | POST | `/lql/generate` | Plain-English → validated LQL via Claude (up to 9 retries) |
+| POST | `/mcp/investigate` | Cloud Investigation: AI agent loop over read-only FortiCNAPP tools (up to 6 iterations) |
 | GET | `/fortiguard/outbreaks` | FortiGuard outbreak RSS (cached 30 min) |
 | GET | `/fortiguard/outbreak-by-cve?cveId=` | Outbreak alerts matching a CVE |
 | GET | `/fortiguard/outbreak-detail?slug=` | Scrape FortiGuard page for PoC/patch/timeline signals |
