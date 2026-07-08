@@ -237,3 +237,9 @@ chat turn once complete.
 - No mutation-tool support (by design — read-only investigation only).
 - No per-request model override — uses the same `ANTHROPIC_DEFAULT_MODEL` every
   other server-side agent endpoint (`/lql/generate`) uses.
+- `serve.py` runs a single-threaded `socketserver.TCPServer` (no
+  `ThreadingMixIn`), so a long-running investigation (up to ~15 min worst
+  case: 6 iterations × up to 90s upstream + 60s tool timeout) monopolizes the
+  sole request-handling thread and blocks every other endpoint (chat, LQL,
+  CVE, etc.) for that duration — a pre-existing architectural constraint made
+  meaningfully worse by this feature, accepted as a known limitation.

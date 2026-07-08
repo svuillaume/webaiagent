@@ -1723,7 +1723,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     rows = result.get('data')
                     count = len(rows) if isinstance(rows, list) else ('1' if result.get('success') else '0')
                     summary = f'{count} result(s)' if result.get('success') else f"error: {result.get('error')}"
-                except (RuntimeError, TimeoutError) as e:
+                except Exception as e:
                     result  = {'success': False, 'error': str(e)}
                     summary = f'error: {e}'
                 emit({'type': 'tool_result', 'tool': block['name'], 'summary': summary})
@@ -2666,20 +2666,22 @@ def _mcp_call_tool(name, arguments, timeout=60):
         if proc is None or proc.poll() is not None:
             raise RuntimeError('MCP subprocess is not running — call _mcp_ensure_started() first')
         call_id = _mcp_next_id()
-        _mcp_write(proc, {
-            'jsonrpc': '2.0', 'id': call_id, 'method': 'tools/call',
-            'params': {'name': name, 'arguments': arguments or {}},
-        })
-        # A timeout (or any other read/parse error) means the JSON-RPC stream may
-        # now be desynced — a stray reader thread could still be blocked on
+        # A write failure (e.g. BrokenPipeError/OSError if the subprocess died
+        # between the poll() check above and this write), a timeout, or any
+        # other read/parse error means the JSON-RPC stream may now be desynced
+        # — a stray reader thread could still be blocked on
         # proc.stdout.readline() and steal a future response. Treat the
-        # subprocess as no longer trustworthy: kill it and clear state so the
-        # next _mcp_ensure_started() call is forced to do a clean respawn,
-        # rather than leaving a corrupted-but-still-"alive" (per poll()) process
-        # around for the next call to race against.
+        # subprocess as no longer trustworthy on ANY exception: kill it and
+        # clear state so the next _mcp_ensure_started() call is forced to do a
+        # clean respawn, rather than leaving a corrupted-but-still-"alive" (per
+        # poll()) process around for the next call to race against.
         try:
+            _mcp_write(proc, {
+                'jsonrpc': '2.0', 'id': call_id, 'method': 'tools/call',
+                'params': {'name': name, 'arguments': arguments or {}},
+            })
             result = _mcp_read_response(proc, call_id, timeout=timeout)
-        except (TimeoutError, RuntimeError):
+        except Exception:
             _mcp_kill_and_reset(proc)
             raise
         if result.get('structuredContent') is not None:
