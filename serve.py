@@ -1659,7 +1659,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
         try:
             _mcp_ensure_started()
-        except RuntimeError as e:
+        except (RuntimeError, TimeoutError) as e:
             emit({'type': 'final', 'text': f'Cloud Investigation is unavailable: {e}'})
             return
 
@@ -1701,6 +1701,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 except Exception:
                     msg = err_body.decode()[:400]
                 emit({'type': 'final', 'text': f'Investigation failed: {msg}'})
+                return
+            except Exception as e:
+                emit({'type': 'final', 'text': f'Investigation failed: {e}'})
                 return
 
             content_blocks = resp_data.get('content', [])
