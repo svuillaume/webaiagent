@@ -2485,6 +2485,20 @@ def _mcp_read_response(proc, want_id, timeout=30):
     return msg.get('result', {})
 
 
+def _mcp_kill_and_reset(proc):
+    """Best-effort kill of a subprocess that is no longer trustworthy (timed out,
+    protocol-desynced, or half-initialized), and reset the shared state so the
+    next _mcp_ensure_started() call is forced into a clean respawn rather than
+    reusing a corrupted/orphaned pipe."""
+    if proc is not None:
+        try:
+            proc.kill()
+        except Exception:
+            pass  # already dead or unkillable — nothing more we can do
+    _mcp_state['proc']  = None
+    _mcp_state['tools'] = None
+
+
 def _mcp_ensure_started():
     """Lazily spawn (or respawn after a crash) the forticnapp-mcp subprocess,
     perform the initialize handshake, and cache its tool list."""
@@ -2515,25 +2529,33 @@ def _mcp_ensure_started():
         _mcp_state['proc']  = proc
         _mcp_state['tools'] = None
 
-        init_id = _mcp_next_id()
-        _mcp_write(proc, {
-            'jsonrpc': '2.0', 'id': init_id, 'method': 'initialize',
-            'params': {
-                'protocolVersion': '2024-11-05',
-                'capabilities': {},
-                'clientInfo': {'name': 'webaiagent', 'version': '1.0'},
-            },
-        })
-        _mcp_read_response(proc, init_id, timeout=30)
-        _mcp_write(proc, {'jsonrpc': '2.0', 'method': 'notifications/initialized'})
+        # If any step of the handshake fails (write/timeout/protocol error), the
+        # just-spawned process must not be left dangling in _mcp_state — a caller
+        # retrying _mcp_ensure_started() would otherwise see tools is None, spawn
+        # a second subprocess, and leak the first one (never killed, never reused).
+        try:
+            init_id = _mcp_next_id()
+            _mcp_write(proc, {
+                'jsonrpc': '2.0', 'id': init_id, 'method': 'initialize',
+                'params': {
+                    'protocolVersion': '2024-11-05',
+                    'capabilities': {},
+                    'clientInfo': {'name': 'webaiagent', 'version': '1.0'},
+                },
+            })
+            _mcp_read_response(proc, init_id, timeout=30)
+            _mcp_write(proc, {'jsonrpc': '2.0', 'method': 'notifications/initialized'})
 
-        list_id = _mcp_next_id()
-        _mcp_write(proc, {'jsonrpc': '2.0', 'id': list_id, 'method': 'tools/list', 'params': {}})
-        result = _mcp_read_response(proc, list_id, timeout=30)
-        _mcp_state['tools'] = [
-            {'name': t['name'], 'description': t.get('description', ''), 'input_schema': t['inputSchema']}
-            for t in result.get('tools', [])
-        ]
+            list_id = _mcp_next_id()
+            _mcp_write(proc, {'jsonrpc': '2.0', 'id': list_id, 'method': 'tools/list', 'params': {}})
+            result = _mcp_read_response(proc, list_id, timeout=30)
+            _mcp_state['tools'] = [
+                {'name': t['name'], 'description': t.get('description', ''), 'input_schema': t['inputSchema']}
+                for t in result.get('tools', [])
+            ]
+        except Exception:
+            _mcp_kill_and_reset(proc)
+            raise
 
 
 def _mcp_call_tool(name, arguments, timeout=60):
@@ -2546,7 +2568,18 @@ def _mcp_call_tool(name, arguments, timeout=60):
             'jsonrpc': '2.0', 'id': call_id, 'method': 'tools/call',
             'params': {'name': name, 'arguments': arguments or {}},
         })
-        result = _mcp_read_response(proc, call_id, timeout=timeout)
+        # A timeout (or any other read/parse error) means the JSON-RPC stream may
+        # now be desynced — a stray reader thread could still be blocked on
+        # proc.stdout.readline() and steal a future response. Treat the
+        # subprocess as no longer trustworthy: kill it and clear state so the
+        # next _mcp_ensure_started() call is forced to do a clean respawn,
+        # rather than leaving a corrupted-but-still-"alive" (per poll()) process
+        # around for the next call to race against.
+        try:
+            result = _mcp_read_response(proc, call_id, timeout=timeout)
+        except (TimeoutError, RuntimeError):
+            _mcp_kill_and_reset(proc)
+            raise
         if result.get('structuredContent') is not None:
             return result['structuredContent']
         # Fallback: some tool results may only populate content[0].text (JSON-encoded)
