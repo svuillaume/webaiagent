@@ -216,7 +216,7 @@ Here's what I can help with:
   - SAST: Go · Java · JavaScript · PHP · Python · TypeScript
   - SCA: .NET · C/C++ · Go · Java · Node.js · PHP · Python · Ruby · Rust
 • 🔰 **FortiCNAPP** — Compliance, Risk Hunting, and Attack Surface analysis (Scan Code lives in this menu too) · [walkthrough](https://github.com/svuillaume/webaiagent#end-to-end-workflow)
-• ⚙ **Admin** — swap AI gateway, model, or the TokenIQ compression proxy any time · [details](https://github.com/svuillaume/webaiagent#environment-variables-env)
+• ⚙ **Admin** — swap AI gateway, model, or the TokenSaving compression proxy any time · [details](https://github.com/svuillaume/webaiagent#environment-variables-env)
 
 Ask me anything, or pick a tool above to get started.`);
 }
@@ -706,14 +706,14 @@ el('fcnapp-community').addEventListener('click', () => {
   chrome.tabs.create({ url: 'https://community.fortinet.com/forticnapp-63' });
 });
 
-// ── TokenIQ: single combined badge (routing + savings) + dashboard link ─────
+// ── TokenSaving: single combined badge (routing + savings) + dashboard link ─────
 // One merged element instead of two separate badges — was crowding the config bar. Runs
 // independently of autoFillFromConfig()'s url/key cache gate — the whole point is to surface the
 // current /config value even when a stale chrome.storage.session value is what the extension is
 // actually using (see: the Headroom docker-internal-hostname bug). Clicking the badge toggles
 // routing via serve.py's /headroom/toggle, which persists to .env and always hands back a
 // browser-reachable gateway_url (never the Docker-internal address).
-(function initTokenIQ() {
+(function initTokenSaving() {
   const badge = el('routing-badge');
   const dashboardBtn = el('dashboard-token');
   const dot = el('routing-dot'); // small at-a-glance indicator on the Admin button itself,
@@ -735,23 +735,22 @@ el('fcnapp-community').addEventListener('click', () => {
   // badge.title directly, or the next render() call (from either refresh function) silently
   // discards it, since render() always does a full overwrite, not an append.
   function render() {
-    badge.classList.add('ok');
     const pctSuffix = viaHeadroom && typeof savingsPct === 'number' ? ` · ${savingsPct}%` : '';
     if (viaHeadroom) {
-      badge.textContent = `🔀 TokenIQ${pctSuffix}`;
-      badge.title = `Chat requests are routed through the local TokenIQ compression proxy. Click to switch back to direct. ${savingsDetail}`;
+      badge.textContent = `🔀 TokenSaving${pctSuffix}`;
+      badge.title = `Chat requests are routed through the local TokenSaving compression proxy. Click to switch back to direct. ${savingsDetail}`;
     } else {
       badge.textContent = '🔀 direct';
       badge.title = (headroomConfigured
-        ? 'Chat requests go straight to the AI gateway. Click to route through TokenIQ instead.'
-        : 'Chat requests go straight to the AI gateway. TokenIQ is not configured (set HEADROOM_URL in .env) — click for details.'
+        ? 'Chat requests go straight to the AI gateway. Click to route through TokenSaving instead.'
+        : 'Chat requests go straight to the AI gateway. TokenSaving is not configured (set HEADROOM_URL in .env) — click for details.'
       ) + ` ${savingsDetail}`;
     }
     badge.style.display = '';
 
     if (dot) {
-      dot.classList.toggle('ok', viaHeadroom);
-      dot.title = viaHeadroom ? `via TokenIQ${pctSuffix}` : 'direct to AI gateway';
+      dot.classList.toggle('active', viaHeadroom);
+      dot.title = viaHeadroom ? `via TokenSaving${pctSuffix}` : 'direct to AI gateway';
     }
   }
 
@@ -791,12 +790,12 @@ el('fcnapp-community').addEventListener('click', () => {
 
     const target = !viaHeadroom;
     if (target && !headroomConfigured) {
-      appendTurn('system', 'TokenIQ is not configured — set HEADROOM_URL (and HEADROOM_DASHBOARD_URL, if running in Docker) in .env, then restart serve.py.');
+      appendTurn('system', 'TokenSaving is not configured — set HEADROOM_URL (and HEADROOM_DASHBOARD_URL, if running in Docker) in .env, then restart serve.py.');
       return;
     }
     const confirmed = confirm(
       target
-        ? 'Switch chat requests to the local TokenIQ compression proxy?'
+        ? 'Switch chat requests to the local TokenSaving compression proxy?'
         : 'Switch chat requests back to going direct to the AI gateway?'
     );
     if (!confirmed) return;
@@ -814,7 +813,7 @@ el('fcnapp-community').addEventListener('click', () => {
       viaHeadroom = !!data.via_headroom;
       await applyGatewayUrl(data.gateway_url);
       render();
-      setStatus(viaHeadroom ? 'routing: via TokenIQ' : 'routing: direct to gateway', 'ok');
+      setStatus(viaHeadroom ? 'routing: via TokenSaving' : 'routing: direct to gateway', 'ok');
     } catch (e) {
       appendTurn('system', `Failed to switch routing: ${e.message}`);
     } finally {
@@ -827,7 +826,7 @@ el('fcnapp-community').addEventListener('click', () => {
       if (dashboardUrl) {
         chrome.tabs.create({ url: dashboardUrl });
       } else {
-        appendTurn('system', 'TokenIQ not configured — set HEADROOM_URL in .env to enable the token-savings dashboard.');
+        appendTurn('system', 'TokenSaving not configured — set HEADROOM_URL in .env to enable the token-savings dashboard.');
       }
     });
   }
@@ -1048,7 +1047,7 @@ async function send(silent = false) {
   });
 })();
 
-// ── Admin dropdown toggle (gateway / model / TokenIQ / community) ──────────
+// ── Admin dropdown toggle (gateway / model / TokenSaving / community) ──────────
 // Same open/close pattern as the FortiCNAPP menu, except clicking inside only closes the
 // menu for actual action items (.admin-item) — the gateway/model <select> elements need
 // clicks to reach their native dropdown without the whole Admin menu closing underneath them.
@@ -1420,7 +1419,7 @@ async function extractPageCode() {
   if (!tab?.id) throw new Error('No active tab');
   const url = tab.url || '';
   // Mirror manifest.json's host_permissions (https://*/* and http://localhost/*) instead of
-  // blocklisting known-bad schemes — that blocklist missed http://127.0.0.1 (e.g. the TokenIQ
+  // blocklisting known-bad schemes — that blocklist missed http://127.0.0.1 (e.g. the TokenSaving
   // dashboard tab), which fell through to executeScript and surfaced Chrome's raw permission
   // error instead of a helpful message.
   const isScannable = /^https:\/\//i.test(url) || /^http:\/\/localhost(:\d+)?(\/|$)/i.test(url);

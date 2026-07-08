@@ -153,7 +153,6 @@ body {
   flex-shrink: 0;
   cursor: default;
 }
-.headroom-badge.ok { color: var(--ok); border-color: rgba(52,211,153,.3); }
 #routing-badge { cursor: pointer; margin-left: auto; transition: border-color .12s, background .12s; }
 #routing-badge:hover { background: var(--surface3); border-color: var(--dim); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
@@ -253,7 +252,7 @@ body {
 .fcnapp-item.danger:hover { color: var(--err);    background: var(--err-bg); }
 .fcnapp-sep { height: 1px; background: var(--border); margin: 4px 2px; }
 
-/* ── Admin dropdown: gateway, model, TokenIQ, community ──────────────────── */
+/* ── Admin dropdown: gateway, model, TokenSaving, community ──────────────────── */
 #admin-wrap { position: relative; flex-shrink: 0; }
 #admin-btn  { gap: 5px; }
 #admin-btn .caret { font-size: 8px; opacity: .6; transition: transform .15s; }
@@ -265,7 +264,7 @@ body {
   flex-shrink: 0;
   transition: background .2s;
 }
-.admin-dot.ok { background: var(--ok); }
+.admin-dot.active { background: var(--text); }
 #admin-menu {
   display: none;
   position: fixed;
@@ -1473,7 +1472,7 @@ a.ext-link:hover { color: var(--accent-d); }
   <button id="forticasb-btn" class="chip lw-disabled" title="FortiCASB-SSPM — coming soon. SaaS security posture: Shadow IT discovery, OAuth app risk, M365/GWS/Salesforce posture.">☁️ FortiCASB-SSPM</button>
   <div class="sep"></div>
   <div id="admin-wrap">
-    <button id="admin-btn" class="chip" title="Gateway, model, TokenIQ, community"><span id="routing-dot" class="admin-dot"></span> Admin <span class="caret">▼</span></button>
+    <button id="admin-btn" class="chip" title="Gateway, model, TokenSaving, community"><span id="routing-dot" class="admin-dot"></span> Admin <span class="caret">▼</span></button>
     <div id="admin-menu">
       <div class="admin-menu-label">AI Gateway</div>
       <select id="gateway" class="admin-select" title="AI Gateway">
@@ -1492,7 +1491,7 @@ a.ext-link:hover { color: var(--accent-d); }
       </select>
       <div class="fcnapp-sep"></div>
       <span id="routing-badge" class="admin-item headroom-badge" style="display:none"></span>
-      <button id="dashboard-token" class="fcnapp-item admin-item" title="Open TokenIQ token-savings dashboard">📊 TokenIQ Dashboard</button>
+      <button id="dashboard-token" class="fcnapp-item admin-item" title="Open TokenSaving token-savings dashboard">📊 TokenSaving Dashboard</button>
       <div class="fcnapp-sep"></div>
       <button id="fcnapp-community" class="fcnapp-item admin-item" title="FortiCNAPP Community — blogs &amp; articles">💬 Community Feed</button>
     </div>

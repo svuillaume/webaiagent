@@ -23,7 +23,7 @@ Works with **FortiCNAPP** (and any CNAPP platform built on Lacework).
 | 🧾 **Incident-style Reports** | LQL and CVE reports follow a consistent Status → Affected Resources → Remediation → Critical Context → Compliance Deadlines → Preserve Evidence structure, with exact CLI fix commands |
 | ⚖️ **Regulatory Obligations** | Reports auto-detect cloud regions and inject applicable frameworks: PIPEDA (Canada), GDPR/NIS2 (EU), NIST/HIPAA/CIRCIA (US), UK GDPR, APAC privacy laws, and ISO 27001 baseline |
 | 📋 **Copy / PDF Export** | One-click copy and PDF export on every AI response |
-| 💾 **TokenIQ compression** *(optional)* | Route chat through a local token-compression proxy ([Headroom](https://github.com/chopratejas/headroom) under the hood) to cut token usage on large report-generation prompts — toggle live from a badge in the panel, no restart needed |
+| 💾 **TokenSaving compression** *(optional)* | Route chat through a local token-compression proxy ([Headroom](https://github.com/chopratejas/headroom) under the hood) to cut token usage on large report-generation prompts — toggle live from a badge in the panel, no restart needed |
 
 ---
 
@@ -37,7 +37,7 @@ Think of it as a security engineer sitting next to you while you browse. You ope
 - **Read this page** — loads the page you're on so you can ask questions about it
 - **TL;DR** — plain-English summary of any page in seconds
 - **Select text → right-click → "Ask AI about selection"** — works on regular pages and inside Chrome's PDF viewer
-- **📊 TokenIQ Dashboard** *(inside the FortiCNAPP menu)* — opens the token-savings dashboard, if configured
+- **📊 TokenSaving Dashboard** *(inside the FortiCNAPP menu)* — opens the token-savings dashboard, if configured
 
 **Cloud security tools (requires FortiCNAPP)**
 
@@ -170,9 +170,9 @@ Console output shows each attempt:
 
 ---
 
-## TokenIQ — Token Compression (optional)
+## TokenSaving — Token Compression (optional)
 
-Report-generation prompts (LQL results, CVE intel, compliance data) can get large — TokenIQ is an optional local proxy that compresses that context before it reaches the AI gateway, cutting token usage without changing what comes back. It's built on the open-source [Headroom](https://github.com/chopratejas/headroom) project.
+Report-generation prompts (LQL results, CVE intel, compliance data) can get large — TokenSaving is an optional local proxy that compresses that context before it reaches the AI gateway, cutting token usage without changing what comes back. It's built on the open-source [Headroom](https://github.com/chopratejas/headroom) project.
 
 **It's off by default and entirely optional** — chat works identically either way, just at full token cost when off.
 
@@ -180,9 +180,9 @@ Report-generation prompts (LQL results, CVE intel, compliance data) can get larg
 1. Start the sidecar: `docker compose up -d` (already included if you're running the default Docker setup — it's inert until enabled, so leaving it running costs nothing)
 2. In the panel, click **⚙ Admin**
 3. Click the routing badge (shows `🔀 direct` when off) → confirm the switch
-4. It flips to `🔀 TokenIQ · <savings>%` — a live lifetime-savings percentage, and stays on across restarts (`HEADROOM_ENABLED` is written to `.env`)
+4. It flips to `🔀 TokenSaving · <savings>%` — a live lifetime-savings percentage, and stays on across restarts (`HEADROOM_ENABLED` is written to `.env`)
 
-Click **📊 TokenIQ Dashboard** (also in the Admin menu) to see the live savings dashboard in a new tab.
+Click **📊 TokenSaving Dashboard** (also in the Admin menu) to see the live savings dashboard in a new tab.
 
 If you're running `python3 serve.py` directly instead of Docker, you'll need Headroom running separately — see [Technical reference](#technical-reference) below for the exact env vars.
 
@@ -282,7 +282,7 @@ Stop-Process -Id (Get-Content .serve.pid)           # Windows
 | CVE returns 0 hosts | CVE may not affect your environment, or extend the time window beyond 7 days |
 | LQL keeps failing | Check console for `[LQL] attempt N/9` — error message shows the datasource/syntax issue |
 | Windows "execution policy" error | PowerShell as Admin: `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser` |
-| "via TokenIQ" routing fails | The TokenIQ (Headroom) sidecar isn't running/healthy — `docker compose up -d headroom`, or click the routing badge to switch back to "direct to AI GW" |
+| "via TokenSaving" routing fails | The TokenSaving (Headroom) sidecar isn't running/healthy — `docker compose up -d headroom`, or click the routing badge to switch back to "direct to AI GW" |
 
 ---
 
