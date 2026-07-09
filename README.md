@@ -17,14 +17,13 @@ Works with **FortiCNAPP** (and any CNAPP platform built on Lacework).
 
 | Feature | Description |
 |---|---|
-| 💬 **AI Chat** | Security-engineer-focused AI assistant with automatic web search for up-to-date information |
-| 🌐 **Translate** | Select text on the page → translates it to English (no-op if it's already English) |
+| 💬 **AI Chat** | Security-engineer-focused AI assistant with automatic web search |
 | 📝 **TL;DR** | Instant plain-English summary of any page |
 | 🖱 **Selection-to-chat** | Right-click any selected text (including inside Chrome's built-in PDF viewer) → "Ask AI about selection" to bring it straight into the chat box |
-| 🛡 **Code Scanner** | Scans code on the current page or a GitHub repo for vulnerabilities, misconfigurations, and exposed secrets |
+| 🛡 **OnDemand CodeSec** | Scans code on the current page or a GitHub repo for vulnerabilities, misconfigurations, and exposed secrets |
 | 🧾 **SBOM Generator** | Generates a Software Bill of Materials for code on the current page or a GitHub repo — SPDX (json/tag/yaml), SARIF, or GitLab JSON |
-| 📋 **Compliance Reports** | Generates compliance PDF reports (CIS, NIST, PCI-DSS, SOC 2, HIPAA, ISO 27001, and 50+ frameworks) |
-| 📊 **Risk Hunting / LQL** | Run saved LQL queries, or describe what you want to find in plain English — the AI writes the query, validates it, and retries up to 9 times if it fails. Falls back to a scoping conversation if the objective needs clarification. |
+| 📋 **CSPM Compliance Reports** | Generates compliance PDF reports (CIS, NIST, PCI-DSS, SOC 2, HIPAA, ISO 27001, and 50+ frameworks) |
+| 📊 **Risk Hunting and threat Hunting** | Run saved LQL queries, or describe what you want to find in plain English — the AI writes the query, validates it, and retries up to 9 times if it fails. Falls back to a scoping conversation if the objective needs clarification. |
 | 🔎 **Cloud Investigation** | Open-ended natural-language question → an AI agent loop calls read-only FortiCNAPP tools across up to 6 iterations to answer it, streaming progress as it goes |
 | 🔬 **Unified Attack Threat Surface** | CVE lookup with a computed CVSS/EPSS/exposure risk-profile radar chart, FortiGuard outbreak scrape, and a minimalist AI-generated report table |
 | 🧾 **Minimalist Reports** | LQL and CVE reports are a single Markdown table — Finding, What It Means / Why It Matters, Next Steps to Remediate (exact CLI fix commands where remediation applies) — one row per matching resource, no boilerplate sections |
