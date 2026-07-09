@@ -17,7 +17,6 @@ Works with **FortiCNAPP** (and any CNAPP platform built on Lacework).
 
 | Feature | Description |
 |---|---|
-| 💬 **AI Chat** | Security-engineer-focused AI assistant with automatic web search |
 | 📝 **TL;DR** | Instant plain-English summary of any page |
 | 🖱 **Selection-to-chat** | Right-click any selected text (including inside Chrome's built-in PDF viewer) → "Ask AI about selection" to bring it straight into the chat box |
 | 🛡 **OnDemand CodeSec** | Scans code on the current page or a GitHub repo for vulnerabilities, misconfigurations, and exposed secrets |
@@ -26,8 +25,8 @@ Works with **FortiCNAPP** (and any CNAPP platform built on Lacework).
 | 📊 **Risk Hunting and threat Hunting** | Run saved LQL queries, or describe what you want to find in plain English — the AI writes the query, validates it, and retries up to 9 times if it fails. Falls back to a scoping conversation if the objective needs clarification. |
 | 🔎 **Cloud Investigation** | Open-ended natural-language question → an AI agent loop calls read-only FortiCNAPP tools across up to 6 iterations to answer it, streaming progress as it goes |
 | 🔬 **Unified Attack Threat Surface** | CVE lookup with a computed CVSS/EPSS/exposure risk-profile radar chart, FortiGuard outbreak scrape, and a minimalist AI-generated report table |
-| 🧾 **Minimalist Reports** | LQL and CVE reports are a single Markdown table — Finding, What It Means / Why It Matters, Next Steps to Remediate (exact CLI fix commands where remediation applies) — one row per matching resource, no boilerplate sections |
-| ⚖️ **Regulatory Obligations** | Reports auto-detect cloud regions and inject applicable frameworks: PIPEDA (Canada), GDPR/NIS2 (EU), NIST/HIPAA/CIRCIA (US), UK GDPR, APAC privacy laws, and ISO 27001 baseline |
+| 🧾 **Minimalist Reports** | LQL and CVE reports are a single table — Resource matching, CSP | Region |  Next Steps to Remediate (exact CLI fix commands where remediation applies) — one row per matching resource |
+| ⚖️ **Regulatory Obligations** | Reports auto-detect Cloud Regions and inject applicable frameworks: PIPEDA (Canada), GDPR/NIS2 (EU), NIST/HIPAA/CIRCIA (US), UK GDPR, APAC privacy laws, and ISO 27001 baseline |
 | 📋 **Copy / PDF Export** | One-click copy and PDF export on every AI response |
 | 💾 **TokenSaving compression** *(optional)* | Route chat through a local token-compression proxy ([Headroom](https://github.com/chopratejas/headroom) under the hood) to cut token usage on large report-generation prompts — toggle live from a badge in the panel, no restart needed |
 
