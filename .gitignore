@@ -7,3 +7,6 @@ extension/config.json
 
 # Local git worktrees (session-isolated workspaces)
 .worktrees/
+
+# superpowers brainstorming visual-companion mockups (local scratch, not shippable output)
+.superpowers/
