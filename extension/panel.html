@@ -523,6 +523,35 @@ body {
   100% { opacity: 0;  transform: scale(.4) translateY(6px); }
 }
 
+/* Segmented progress stepper for Assisted Investigation / Cloud Investigation. panel.js
+   sets the segment count per feature and fills/pulses segments as real server-side
+   progress events arrive — replaces the sailboat's "still working" role with an honest
+   step count instead of pure decoration. */
+.progress-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 8px;
+}
+.stepper-track {
+  display: flex;
+  gap: 4px;
+  flex: 1;
+}
+.stepper-seg {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--surface2);
+}
+.stepper-seg.done   { background: var(--ok); }
+.stepper-seg.active { background: var(--accent); animation: stepper-pulse 1s ease-in-out infinite; }
+.stepper-elapsed { font-size: 10px; color: var(--dim); white-space: nowrap; }
+@keyframes stepper-pulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .45; }
+}
+
 .drawer-results {
   flex: 1;
   overflow: auto;
@@ -1582,6 +1611,10 @@ a.ext-link:hover { color: var(--accent-d); }
       <span id="investigate-status" class="drawer-status"></span>
       <span id="investigate-boat" class="lql-boat" title="Working hard…">⛵</span>
       <div id="investigate-wake-trail"></div>
+    </div>
+    <div id="investigate-stepper" class="progress-stepper" style="display:none">
+      <div class="stepper-track"></div>
+      <span class="stepper-elapsed"></span>
     </div>
   </div>
 </div>

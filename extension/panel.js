@@ -2835,15 +2835,15 @@ async function runCloudInvestigation() {
   if (!prompt) return;
   if (guardBusy()) return;
 
-  const btn      = el('investigate-btn');
-  const statusEl = el('investigate-status');
-  const boatEl   = el('investigate-boat');
-  const trailEl  = el('investigate-wake-trail');
+  const btn       = el('investigate-btn');
+  const statusEl  = el('investigate-status');
+  const stepperEl = el('investigate-stepper');
 
   btn.disabled = true;
   statusEl.textContent = 'investigating…';
   statusEl.className   = '';
-  startSailing(boatEl, trailEl);
+  startStepper(stepperEl, 6); // 1:1 with the 6-tool-call budget in serve.py's MAX_ITERATIONS
+  updateStepper(stepperEl, 1, 6);
 
   busy = true;
   el('send').disabled = true;
@@ -2873,6 +2873,7 @@ async function runCloudInvestigation() {
         if (ev.type === 'tool_call') {
           steps.push({ tool: ev.tool, summary: null });
           statusEl.textContent = `🔧 ${ev.tool}…`;
+          updateStepper(stepperEl, steps.length, 6);
         } else if (ev.type === 'tool_result') {
           const last = steps[steps.length - 1];
           if (last) last.summary = ev.summary;
@@ -2924,7 +2925,7 @@ async function runCloudInvestigation() {
     busy = false;
     el('send').disabled = false;
     btn.disabled = false;
-    stopSailing(boatEl, trailEl);
+    stopStepper(stepperEl);
     scrollLog();
   }
 }
@@ -3105,6 +3106,46 @@ function stopSailing(boatEl, trailEl) {
   _currentCircle = null;
   boatEl.style.display = 'none';
   trailEl.innerHTML = '';
+}
+
+// Segmented progress stepper — replaces the sailboat for showing real server-side
+// progress. startStepper(el, N) renders N empty segments and starts a live elapsed-time
+// ticker; updateStepper(el, step, max) fills segments proportionally to step/max and
+// pulses the current one; stopStepper(el) tears both down and hides the element.
+let _stepperElapsedTimer = null, _stepperStartedAt = 0;
+
+function startStepper(stepperEl, segmentCount) {
+  const track = stepperEl.querySelector('.stepper-track');
+  track.innerHTML = '';
+  for (let i = 0; i < segmentCount; i++) {
+    const seg = document.createElement('div');
+    seg.className = 'stepper-seg';
+    track.appendChild(seg);
+  }
+  stepperEl.style.display = 'flex';
+  _stepperStartedAt = performance.now();
+  const elapsedEl = stepperEl.querySelector('.stepper-elapsed');
+  elapsedEl.textContent = '0s elapsed';
+  clearInterval(_stepperElapsedTimer);
+  _stepperElapsedTimer = setInterval(() => {
+    const secs = Math.round((performance.now() - _stepperStartedAt) / 1000);
+    elapsedEl.textContent = `${secs}s elapsed`;
+  }, 1000);
+}
+
+function updateStepper(stepperEl, step, max) {
+  const segs = stepperEl.querySelectorAll('.stepper-seg');
+  if (!segs.length) return;
+  const filled = Math.min(segs.length, Math.max(0, Math.ceil((step / max) * segs.length)));
+  segs.forEach((seg, i) => {
+    seg.classList.toggle('done',   i <  filled - 1);
+    seg.classList.toggle('active', i === filled - 1);
+  });
+}
+
+function stopStepper(stepperEl) {
+  clearInterval(_stepperElapsedTimer);
+  stepperEl.style.display = 'none';
 }
 
 el('lql-gen-btn').addEventListener('click', async () => {
