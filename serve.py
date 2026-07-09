@@ -1709,6 +1709,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
             emit({'type': 'final', 'text': 'Gateway URL or virtual key not configured.'})
             return
 
+        inv_now   = datetime.now(timezone.utc)
+        inv_start = (inv_now - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        inv_end   = inv_now.strftime('%Y-%m-%dT%H:%M:%SZ')
         system_prompt = (
             "You are a read-only FortiCNAPP cloud security investigator. Use the "
             "available tools to answer the user's objective by querying their real "
@@ -1719,10 +1722,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "the actual constraint, e.g. an exact allowed date range) and correct "
             "your NEXT call accordingly — never repeat a call with the same mistake. "
             "You have a strict budget of 6 tool calls total, so favor a single "
-            "well-targeted, filtered query over broad unfiltered ones. Time-ranged "
-            "endpoints commonly cap the span between startTime/endTime (often 7 or "
-            "90 days) — if you don't already know the objective needs history, start "
-            "with a narrow recent window rather than guessing at a wide one.\n\n"
+            "well-targeted, filtered query over broad unfiltered ones. For any tool "
+            f"that takes a startTime/endTime, default to startTime={inv_start} and "
+            f"endTime={inv_end} (the last 30 days) unless the objective explicitly "
+            "asks for a different window — this stays inside every known cap "
+            "(endpoints commonly enforce 7 or 90 days) so you don't burn a retry "
+            "discovering the limit the hard way.\n\n"
             "CRITICAL — do not guess filter values cold, and do not trust an empty "
             "result: FortiCNAPP's own field values (e.g. resourceType) use ITS "
             "internal taxonomy — lowercase 'service:resource' pairs like "
@@ -1906,9 +1911,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         cache_key = ' '.join(objective.lower().split())
         entry = _lql_cache.get(cache_key)
         if entry and datetime.now(timezone.utc).timestamp() - entry['cached_at'] < RESPONSE_CACHE_TTL_SECONDS:
-            cached = dict(entry['response'])
-            cached['cached'] = True
-            self.send_json(200, json.dumps(cached).encode())
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/x-ndjson')
+            for k, v in CORS.items():
+                self.send_header(k, v)
+            self.end_headers()
+            for ev in entry['events']:
+                self.wfile.write((json.dumps(ev) + '\n').encode())
+                self.wfile.flush()
             return
 
         if not DIRECT_UPSTREAM or not VIRTUAL_KEY:
@@ -1924,6 +1934,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 _schema_hints  = self._lw_schema_hints(*_lw_token_data)
             except Exception:
                 _lw_token_data = None
+
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/x-ndjson')
+        for k, v in CORS.items():
+            self.send_header(k, v)
+        self.end_headers()
+
+        recorded_events = []
+
+        def emit(obj):
+            recorded_events.append(obj)
+            self.wfile.write((json.dumps(obj) + '\n').encode())
+            self.wfile.flush()
 
         system_prompt = """\
 You are a FortiCNAPP LQL (Lacework Query Language) expert. Generate a single valid LQL query for the given objective.
@@ -2327,9 +2350,15 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 if r.returncode == 0:
                     return None
                 err = (r.stderr or r.stdout or '').strip()
-                for line in err.splitlines():
-                    if 'Error:' in line or 'Unable to' in line or 'error' in line.lower():
-                        return line.strip()
+                # The CLI's real reason is the LAST matching line, not the first — a
+                # generic "ERROR unable to validate query:" header always comes first,
+                # followed by request info, with the actual API detail (e.g. "[400]
+                # Error: Unable to translate due to: ...") last. Returning the first
+                # match starves the model of the one thing it needs to self-correct.
+                detail_lines = [l.strip() for l in err.splitlines()
+                                if 'Error:' in l or 'Unable to' in l or 'error' in l.lower()]
+                if detail_lines:
+                    return detail_lines[-1]
                 return err[-300:] if err else 'validation failed'
             except subprocess.TimeoutExpired:
                 return 'validation timed out'
@@ -2359,9 +2388,12 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                     rows = raw.get('data', raw) if isinstance(raw, dict) else raw
                     return (rows if isinstance(rows, list) else []), None
                 err = (r.stderr or r.stdout or '').strip()
-                for line in err.splitlines():
-                    if 'Error:' in line or 'Unable to' in line or 'error' in line.lower():
-                        return None, line.strip()
+                # Same fix as _validate_lql above — the specific API error is the
+                # LAST matching line, not the first.
+                detail_lines = [l.strip() for l in err.splitlines()
+                                if 'Error:' in l or 'Unable to' in l or 'error' in l.lower()]
+                if detail_lines:
+                    return None, detail_lines[-1]
                 return None, err[-300:] if err else 'query failed'
             except subprocess.TimeoutExpired:
                 return None, 'query timed out'
@@ -2382,6 +2414,7 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
 
         try:
             messages = [{'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'}]
+            emit({'type': 'attempt', 'attempt': 1, 'max': 20, 'phase': 'asking_claude'})
             result, last_err = _call_claude_retryable(messages)
 
             # validate-then-fix loop — validate syntax first (fast), then run for real.
@@ -2400,6 +2433,7 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                             'Respond with ONLY the JSON object — no markdown, no commentary before or after it.'
                         )})
                         print(f'  [LQL]   → asking Claude to retry (attempt {attempt+2})')
+                        emit({'type': 'attempt', 'attempt': attempt + 2, 'max': MAX_RETRIES, 'phase': 'asking_claude'})
                         result, last_err = _call_claude_retryable(messages)
                     continue
 
@@ -2408,6 +2442,7 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                     break
 
                 print(f'  [LQL] attempt {attempt+1}/{MAX_RETRIES} — query: {query_text[:120].replace(chr(10)," ")}…')
+                emit({'type': 'attempt', 'attempt': attempt + 1, 'max': MAX_RETRIES, 'phase': 'validating'})
 
                 # Step 1: validate syntax before executing (fast, no API call)
                 val_err = _validate_lql(query_text)
@@ -2425,10 +2460,12 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                             'Fix the LQL and return only the corrected JSON object.'
                         )})
                         print(f'  [LQL]   → asking Claude to fix (attempt {attempt+2})')
+                        emit({'type': 'attempt', 'attempt': attempt + 2, 'max': MAX_RETRIES, 'phase': 'asking_claude'})
                         result, last_err = _call_claude_retryable(messages)
                     continue  # re-enter loop with corrected result (or exit on final attempt)
 
                 print(f'  [LQL]   ✓ validation passed — running…')
+                emit({'type': 'attempt', 'attempt': attempt + 1, 'max': MAX_RETRIES, 'phase': 'running'})
 
                 # Step 2: run for real only after validation passes
                 rows, err = _run_lql(query_text)
@@ -2455,12 +2492,13 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                         'Fix the LQL and return only the corrected JSON object.'
                     )})
                     print(f'  [LQL]   → asking Claude to fix (attempt {attempt+2})')
+                    emit({'type': 'attempt', 'attempt': attempt + 2, 'max': MAX_RETRIES, 'phase': 'asking_claude'})
                     result, last_err = _call_claude_retryable(messages)
 
             # If all retries exhausted with an error, surface it rather than returning empty
             if last_err and cached_rows is None and (result or {}).get('queryId') != 'USE_CVE_TAB':
                 print(f'  [LQL] ✗ gave up after {MAX_RETRIES} attempts — {last_err}')
-                self.send_json(500, json.dumps({'error': f'LQL still failing after {MAX_RETRIES} attempts — last error: {last_err}'}).encode())
+                emit({'type': 'error', 'error': f'LQL still failing after {MAX_RETRIES} attempts — last error: {last_err}'})
                 return
 
             # Attach pre-run rows — keep lean, no caching of rows (rows re-run fresh on next request)
@@ -2499,21 +2537,27 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 except Exception:
                     pass  # best-effort — never fail the response
 
-            # Cache the full response (including rows) for RESPONSE_CACHE_TTL_SECONDS
+            final_event = {'type': 'final', **result}
+            recorded_events.append(final_event)
+
+            # Cache the full recorded event stream (including the final rows) for
+            # RESPONSE_CACHE_TTL_SECONDS — a cache hit replays it verbatim, same as
+            # /mcp/investigate.
             if result.get('queryText') and result.get('queryId') != 'USE_CVE_TAB':
                 _lql_cache[cache_key] = {
-                    'response':  dict(result),
+                    'events':    recorded_events,
                     'cached_at': datetime.now(timezone.utc).timestamp(),
                 }
 
-            self.send_json(200, json.dumps(result).encode())
+            self.wfile.write((json.dumps(final_event) + '\n').encode())
+            self.wfile.flush()
         except urllib.error.HTTPError as e:
             err_body = e.read()
             try:
                 msg = json.loads(err_body).get('error', {}).get('message', err_body.decode()[:400])
             except Exception:
                 msg = err_body.decode()[:400]
-            self.send_json(e.code, json.dumps({'error': msg}).encode())
+            emit({'type': 'error', 'error': msg})
         except Exception as e:
             msg = str(e)
             if 'Name or service not known' in msg or 'urlopen error' in msg:
@@ -2521,7 +2565,7 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 hint = 'HEADROOM_URL' if _headroom_enabled() else 'ANTHROPIC_BASE_URL'
                 msg = (f'Cannot reach AI gateway ({target}). '
                        f'Check that {hint} in .env points to a reachable address and restart the server.')
-            self.send_json(500, json.dumps({'error': msg}).encode())
+            emit({'type': 'error', 'error': msg})
 
     def serve_lql_run(self):
         try:
