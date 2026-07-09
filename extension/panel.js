@@ -3152,15 +3152,15 @@ el('lql-gen-btn').addEventListener('click', async () => {
   const objective = el('lql-objective').value.trim();
   if (!objective) return;
 
-  const btn      = el('lql-gen-btn');
-  const statusEl = el('lql-gen-status');
-  const boatEl   = el('lql-gen-boat');
-  const trailEl  = el('lql-gen-wake-trail');
+  const btn       = el('lql-gen-btn');
+  const statusEl  = el('lql-gen-status');
+  const stepperEl = el('lql-gen-stepper');
 
   btn.disabled         = true;
   statusEl.textContent = 'running…';
   statusEl.className   = '';
-  startSailing(boatEl, trailEl);
+  startStepper(stepperEl, 8); // 8 fixed segments scaled against the real 20-attempt budget
+  updateStepper(stepperEl, 1, 20);
   _genQueryText        = '';
   el('lql-gen-results').innerHTML = '';
 
@@ -3170,8 +3170,32 @@ el('lql-gen-btn').addEventListener('click', async () => {
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ objective }),
     });
-    const data = await genRes.json();
-    if (data.error) throw new Error(data.error);
+
+    const reader = genRes.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '', data = null;
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let ev; try { ev = JSON.parse(line); } catch { continue; }
+        if (ev.type === 'attempt') {
+          statusEl.textContent = ev.phase === 'asking_claude' ? 'asking Claude…'
+                                : ev.phase === 'validating'    ? 'validating query…'
+                                : 'running…';
+          updateStepper(stepperEl, ev.attempt, ev.max);
+        } else if (ev.type === 'error') {
+          throw new Error(ev.error);
+        } else if (ev.type === 'final') {
+          data = ev;
+        }
+      }
+    }
+    if (!data) throw new Error('Stream ended with no result.');
 
     if (data.queryId === 'USE_CVE_TAB') {
       const cveMatch = objective.match(/CVE-\d{4}-\d{4,}/i);
@@ -3275,7 +3299,7 @@ el('lql-gen-btn').addEventListener('click', async () => {
     _startLqlScopingConversation(objective, e.message);
   } finally {
     btn.disabled = false;
-    stopSailing(boatEl, trailEl);
+    stopStepper(stepperEl);
   }
 });
 
