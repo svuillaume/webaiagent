@@ -10,7 +10,7 @@ Works with **FortiCNAPP** (and any CNAPP platform built on Lacework).
 
 ## Architecture
 
-<img width="1774" height="887" alt="image" src="https://github.com/user-attachments/assets/7ebe863e-8896-4f9e-a636-57bb96fa28c8" />
+<img width="1851" height="849" alt="image" src="https://github.com/user-attachments/assets/ff1d3743-ca5f-45b2-a435-4fe1e2f9289c" />
 
 
 ## Features
