@@ -4,6 +4,26 @@ Running log of notable features and changes. Newest entries at the top.
 
 ---
 
+## 2026-07-09
+
+### Segmented progress stepper replaces the sailboat; real LQL validation errors surface to the model
+
+Assisted Investigation and Cloud Investigation both showed a purely decorative sailboat animation while working, with no indication of real progress. Worse, `/lql/generate` was a single blocking call that could silently retry up to 20 times server-side before responding at all — the browser had zero visibility into how far along it was, and a `POST /lql/generate` that exhausted all 20 attempts just returned a bare HTTP 500. Converted `/lql/generate` to NDJSON streaming (mirroring `/mcp/investigate`'s existing pattern — `attempt`/`final`/`error` events, cache hits replay the full recorded event list), and replaced the sailboat in both drawers with a segmented stepper: 6 segments 1:1 with Cloud Investigation's tool-call budget, 8 fixed segments scaled against Assisted Investigation's 20-attempt budget, plus a live elapsed-time counter.
+
+Along the way, found and fixed the actual root cause of most retry loops running to exhaustion: `_validate_lql()`/`_run_lql()` extracted the lacework CLI's error detail by returning the *first* line matching "error"/"Unable to"/"Error:" — but the CLI's real output always puts a generic `ERROR unable to validate query:` header first and the actual reason (e.g. `[400] Error: Unable to translate due to: Cannot find a default implicit join between these sources...`) last. The model was only ever shown the useless header, so it blindly guessed across datasources for up to 20 attempts instead of self-correcting. Now returns the last matching line instead of the first — confirmed a previously-failing query ("EC2 instances with attached instance profiles and highly permissive IAM roles") now succeeds on the first attempt.
+
+Also fixed Cloud Investigation defaulting to a stale/out-of-range time window: its system prompt now hands the model an exact pre-computed `startTime`/`endTime` (last 30 days) for any time-filtered tool call instead of vague "start narrow" guidance, since FortiCNAPP's `Inventory/search` enforces an undocumented 90-day cap the model had no way to know about upfront.
+
+---
+
+## 2026-07-08
+
+### Minimalist report format for Risk Hunting (LQL/Assisted Investigation) and Unified Attack Threat Surface (CVE)
+
+Reports were forced through a heavy incident-report template (Status/severity line, separate Remediation/Critical Context/Compliance Deadlines/Preserve Evidence sections, footer) regardless of whether the objective was an actual security finding. For pure inventory objectives (e.g. "list all VM's in Azure") this produced a report structurally disconnected from the data, and — separately — the row data sent to the model was capped at 50 rows with no indication given back, so the report silently covered a fraction of what the raw results table above it already showed in full (verified live: 44 of 196 real Azure VMs, while claiming "196 total"). Replaced `INCIDENT_REPORT_TEMPLATE` with a single minimalist table — Finding | What It Means / Why It Matters | Next Steps to Remediate — shared by both features; CVE reports keep exact patch commands inline and the pre-computed risk-profile radar chart now sits directly above the table instead of inside a removed "Critical Context" section; regulatory obligations become table rows instead of a separate section. Raised the row sample sent to the model to 100 (from 50) with an honest "first N of total" note when truncated, and bumped `MAX_TOKENS` 4096 → 8192, since requiring one row per resource needs more output budget than the old summarized format did — without it the model's own table got cut off mid-row around 120 rows.
+
+---
+
 ## 2026-07-03 (cont'd)
 
 ### 11. Rebrand: Web AI Agent → FortiAIScout, Status: Alpha
