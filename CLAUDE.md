@@ -86,6 +86,8 @@ Note: the request path above is for FortiAIScout's own chat traffic (WebAiAgent 
 
 **`extension/background.js`** — service worker that opens the side panel on toolbar icon click.
 
+**`extension/content.js`** — content script injected into every page; detects a `CVE-YYYY-NNNN`-shaped text selection on `mouseup` and messages `background.js` (`CVE_SELECTED`), which feeds the existing CVE-selection flow.
+
 **`chatbox.html`** — standalone browser chat UI (served by `serve.py` at `/`), useful for testing outside the extension.
 
 ## Backend endpoints
@@ -154,3 +156,4 @@ The extension reads its initial config from `GET /config` on `localhost:45321`.
 - `serve.py` itself must remain zero-dependency (Python stdlib only) — no pip installs *imported by* `serve.py`. The Dockerfile does `pip install` the vendored `vendor/mcp_forticnapp` package (for Cloud Investigation), but `serve.py` only ever reaches it via `subprocess.Popen`, never `import`, so this constraint holds for the file itself.
 - The Dockerfile installs the lacework CLI via its install script during build — lacework SCA component is pre-installed to avoid download delays at runtime.
 - The extension's CSP (`manifest.json`) restricts `connect-src` to `localhost:45321`, `https://api.github.com`, `https://raw.githubusercontent.com`, and `https://*` — any new fetch target must be added there.
+- There is no automated test suite or linter in this repo (`serve.py` and the extension are both plain, framework-free code). Verify changes by running the backend and exercising the affected flow through the extension or `chatbox.html`.
