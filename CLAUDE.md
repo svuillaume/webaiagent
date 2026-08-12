@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this project is
 
-FortiAIScout (Alpha — early-stage, expect rapid change) is a browser-native AI security assistant: a Chrome extension (side panel) backed by a local Python HTTP server (`serve.py`). The extension sends chat through an AI gateway (Bifrost, Portkey, LiteLLM, or Helicone) to Claude. Web search uses Anthropic's native `web_search_20260209` server-side tool — no local search instance required. `serve.py` is a CORS proxy for FortiCNAPP security tools.
+FortiAIScout (Alpha — early-stage, expect rapid change) is a browser-native AI security assistant: a Chrome extension (side panel) backed by a local Python HTTP server (`serve.py`). The extension sends chat through an AI gateway (Bifrost, Portkey, LiteLLM, or Helicone) to Claude. A fifth option, **Ollama**, is client-side only: `panel.js` talks straight to a local `ollama serve` (default `http://localhost:11434`), with no API key, no AI gateway, and no Headroom routing in the path — it uses Ollama's OpenAI-compatible `/v1/chat/completions` and a separate SSE reader (`readOllamaStream()`), so no web search either. Web search (the other four gateways) uses Anthropic's native `web_search_20260209` server-side tool — no local search instance required. `serve.py` is a CORS proxy for FortiCNAPP security tools.
 
 One other component lives in this repo but is separate from the extension/`serve.py` pair above:
 - `vendor/mcp_forticnapp/` — a vendored (one-time copy, not a live dependency) MCP server that exposes FortiCNAPP's API as tools; `serve.py` spawns it as a subprocess for the Cloud Investigation feature (see Architecture below). Has its own README with its own architecture notes — read that before touching files under this directory.
@@ -61,6 +61,7 @@ Chrome Extension (extension/)
   ├─ Chat ──────────► AI Gateway (Bifrost / Portkey / LiteLLM / Helicone)      [HEADROOM_ENABLED=0]
   │              or ► serve.py /proxy ► Headroom sidecar ► AI Gateway         [HEADROOM_ENABLED=1]
   │                        └──► Claude API  (web search runs server-side)
+  │              or ► Ollama  localhost:11434  (direct: no key, no gateway, no Headroom, no web search)
   │
   └─ Security tools ► serve.py  localhost:45321
                            ├──► FortiCNAPP REST API  (via lacework CLI)
@@ -82,7 +83,7 @@ Note: the request path above is for FortiAIScout's own chat traffic (WebAiAgent 
 
 **`serve.py`** — single-file Python stdlib HTTP server. Handles all backend routes, reads `.env` at startup, auto-detects `~/.lacework.toml` to set `lw_ready`. No framework, no dependencies.
 
-**`extension/panel.js`** — all extension logic: gateway auth header construction, streaming chat, LQL tab, CVE lookup, CodeSec. Gateway choice and model persist in `chrome.storage.local`; API key and gateway URL are session-RAM only (cleared on Chrome close, never written to disk). When on a GitHub repo page, CodeSec/SBOM fetches real files via the GitHub API (recursive tree + raw content, up to 80 files, manifests prioritised); on other pages it scrapes `<pre>` blocks and guesses filenames heuristically so lacework SCA receives correct manifest names.
+**`extension/panel.js`** — all extension logic: gateway auth header construction, streaming chat, LQL tab, CVE lookup, CodeSec. Gateway choice and model persist in `chrome.storage.local`; API key and gateway URL are session-RAM only (cleared on Chrome close, never written to disk). Ollama is the exception on both counts: its URL and model live in their own `chrome.storage.local` keys (`bf_ollama_url`/`bf_ollama_model`) — a localhost address is not a credential, and sharing the other four gateways' `bf_url`/`bf_model` slots would let the two gateway families overwrite each other. `applyGatewayProfile()` reloads `#url-input` from whichever slot the incoming gateway owns (reading storage directly, never trusting the field's current value, since the startup `storage.session`/`storage.local` callbacks race). When on a GitHub repo page, CodeSec/SBOM fetches real files via the GitHub API (recursive tree + raw content, up to 80 files, manifests prioritised); on other pages it scrapes `<pre>` blocks and guesses filenames heuristically so lacework SCA receives correct manifest names.
 
 **`extension/background.js`** — service worker that opens the side panel on toolbar icon click.
 

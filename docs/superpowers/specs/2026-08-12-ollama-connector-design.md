@@ -1,7 +1,7 @@
 # Ollama Connector — Design
 
 **Date:** 2026-08-12
-**Status:** Approved, pending implementation
+**Status:** Implemented
 
 ## Goal
 
@@ -84,6 +84,7 @@ Fetch failures (Ollama not running, wrong port, connection refused) surface thro
 ## Testing plan
 
 No automated test suite exists in this repo (per `CLAUDE.md`). Verification is manual:
+0. **Before anything else — CORS.** Every request from the side panel is cross-origin from `chrome-extension://…`, and the `Content-Type: application/json` body forces a preflight. Some Ollama versions reject that origin outright, which surfaces as an opaque "Failed to fetch" indistinguishable from "Ollama isn't running". If that happens, restart with the origin allowed: `OLLAMA_ORIGINS='chrome-extension://*' ollama serve`. Same class of trap for the address form: use `http://localhost:11434` or `http://127.0.0.1:11434` — both are covered by the manifest's CSP `connect-src`/`host_permissions`, nothing else on plain HTTP is.
 1. `ollama serve` + `ollama pull <model>` locally.
 2. Load the unpacked extension, open the side panel, switch gateway to Ollama.
 3. Confirm the URL field defaults to `http://localhost:11434`, the key input is hidden, and the model dropdown populates from `/api/tags`.
