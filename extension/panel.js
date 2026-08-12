@@ -131,7 +131,12 @@ function updateInvestigateAvailability() {
 // ── Storage ───────────────────────────────────────────────────────────────
 // session = auto-cleared on Chrome close (keeps credentials out of disk); local = survives restarts (safe for non-secret prefs)
 chrome.storage.session.get(['bf_url', 'bf_key', 'bf_key2'], ({ bf_url, bf_key, bf_key2 }) => {
-  if (bf_url)  urlInput.value  = bf_url;
+  // bf_url belongs to the four AI-gateway profiles only. If the sibling storage.local callback
+  // below already restored Ollama as the active gateway (the two callbacks race — different
+  // storage areas, no ordering guarantee), applyGatewayProfile() has filled the field from
+  // bf_ollama_url and this must not stomp it back. In the other ordering the gateway select is
+  // still on its default here, this assignment runs, and applyGatewayProfile() corrects it after.
+  if (bf_url && !(GATEWAYS[el('gateway').value] || {}).noKey) urlInput.value = bf_url;
   if (bf_key)  keyInput.value  = bf_key;
   if (bf_key2) key2Input.value = bf_key2;
   if (!bf_url || !bf_key) autoFillFromConfig();
@@ -141,16 +146,7 @@ chrome.storage.local.get(['bf_model', 'bf_gateway'], ({ bf_model, bf_gateway }) 
   if (bf_gateway && GATEWAYS[bf_gateway]) {
     el('gateway').value = bf_gateway;
     applyGatewayProfile(bf_gateway);
-    if (bf_gateway === 'ollama') {
-      // urlInput.value may not be populated yet here — it's filled by the sibling
-      // chrome.storage.session.get(['bf_url', ...]) callback above, which has no guaranteed
-      // ordering relative to this chrome.storage.local.get callback. Read bf_url directly from
-      // session storage so a saved custom Ollama URL isn't silently dropped in favor of the
-      // localhost default when the other callback happens to resolve second.
-      chrome.storage.session.get(['bf_url'], ({ bf_url }) => {
-        populateOllamaModels((bf_url || urlInput.value).trim() || 'http://localhost:11434');
-      });
-    }
+    if (bf_gateway === 'ollama') populateOllamaModelsFromStorage();
   }
   updateInvestigateAvailability();
 });
@@ -167,7 +163,32 @@ function applyGatewayProfile(gw) {
   // to see and edit this field directly.
   urlInput.style.display        = p.noKey ? '' : 'none';
   el('url-label').style.display = p.noKey ? '' : 'none';
-  if (p.noKey && !urlInput.value) urlInput.value = p.urlHint;
+
+  // #url-input is shared by all five gateways, but its *value* is not: Ollama keeps its URL in
+  // its own bf_ollama_url slot (chrome.storage.local — a localhost address, not a credential,
+  // so same treatment as bf_model/bf_gateway), while the other four keep using session bf_url,
+  // filled from serve.py's /config. Always reload the field from the slot the *incoming* gateway
+  // owns — the field still holds the outgoing gateway's URL, so an "only if empty" guard would
+  // leave the wrong URL visible and, worse, let a stale Ollama address be POSTed to a real
+  // gateway. Read storage directly rather than trusting urlInput.value: the two startup get()
+  // callbacks (session bf_url / local bf_gateway) have no guaranteed ordering between them.
+  if (p.noKey) {
+    chrome.storage.local.get(['bf_ollama_url'], ({ bf_ollama_url }) => {
+      urlInput.value = bf_ollama_url || p.urlHint;
+    });
+  } else {
+    chrome.storage.session.get(['bf_url'], ({ bf_url }) => {
+      if (bf_url) { urlInput.value = bf_url; return; }
+      // No gateway URL known yet — autoFillFromConfig() may still be fetching /config, so only
+      // wipe the field when what's in it is Ollama's; never clobber a fresh /config fill.
+      chrome.storage.local.get(['bf_ollama_url'], ({ bf_ollama_url }) => {
+        const cur = urlInput.value.trim();
+        if (cur && (cur === (bf_ollama_url || '').trim() || cur === GATEWAYS.ollama.urlHint)) {
+          urlInput.value = '';
+        }
+      });
+    });
+  }
 }
 
 async function restoreStaticModelOptions() {
@@ -175,6 +196,18 @@ async function restoreStaticModelOptions() {
   sel.innerHTML = STATIC_MODEL_OPTIONS_HTML;
   const { bf_model } = await chrome.storage.local.get(['bf_model']);
   if (bf_model) sel.value = bf_model;
+  // Swapping innerHTML doesn't fire a 'change' event, so the Cloud Investigation gate (which
+  // keys off the selected model) would otherwise stay stale until the user picks a model by hand.
+  updateInvestigateAvailability();
+}
+
+// applyGatewayProfile() fills urlInput from bf_ollama_url asynchronously, so every caller that
+// needs the Ollama URL right after a gateway switch must read the same slot rather than the
+// field — which may still hold the previous gateway's URL at that moment.
+function populateOllamaModelsFromStorage() {
+  chrome.storage.local.get(['bf_ollama_url'], ({ bf_ollama_url }) => {
+    populateOllamaModels((bf_ollama_url || '').trim() || GATEWAYS.ollama.urlHint);
+  });
 }
 
 async function populateOllamaModels(baseUrl) {
@@ -186,18 +219,26 @@ async function populateOllamaModels(baseUrl) {
     const models = data.models || [];
     if (!models.length) throw new Error('no models installed');
     sel.innerHTML = models.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+    // Re-select the last Ollama model the user picked, if it's still installed — otherwise the
+    // first tag /api/tags returns silently wins on every reload. Own slot: bf_model stays
+    // reserved for the static Claude/deepseek list.
+    const { bf_ollama_model } = await chrome.storage.local.get(['bf_ollama_model']);
+    if (bf_ollama_model && models.some(m => m.name === bf_ollama_model)) sel.value = bf_ollama_model;
     setStatus(`${models.length} ollama model${models.length !== 1 ? 's' : ''}`, 'ok');
   } catch (err) {
     sel.innerHTML = '<option value="" disabled selected>⚠ no models found</option>';
     setStatus(`ollama: ${err.message}`, 'err');
   }
+  // Same reason as in restoreStaticModelOptions(): no 'change' event fires for a programmatic
+  // innerHTML swap, and both paths above (models found / none found) change the selected model.
+  updateInvestigateAvailability();
 }
 
 el('gateway').addEventListener('change', () => {
   const gw = el('gateway').value;
   applyGatewayProfile(gw);
   chrome.storage.local.set({ bf_gateway: gw });
-  if (gw === 'ollama') populateOllamaModels(urlInput.value.trim());
+  if (gw === 'ollama') populateOllamaModelsFromStorage();
   else                 restoreStaticModelOptions();
 });
 
@@ -218,6 +259,16 @@ async function autoFillFromConfig() {
   if (!cfg) return;
 
   const fill = (input, cfgKey, storeKey) => {
+    // /config describes the *AI gateway*, which Ollama bypasses entirely — never let a late
+    // /config response overwrite the URL field while Ollama is the visible, editable gateway.
+    // Still seed bf_url (same "only if not already set" rule), so switching to one of the other
+    // four gateways later finds a usable URL in its own slot.
+    if (input === urlInput && (GATEWAYS[el('gateway').value] || {}).noKey) {
+      chrome.storage.session.get(['bf_url'], ({ bf_url }) => {
+        if (cfg[cfgKey] && !bf_url) chrome.storage.session.set({ bf_url: cfg[cfgKey] });
+      });
+      return;
+    }
     if (cfg[cfgKey] && !input.value) {
       input.value = cfg[cfgKey];
       chrome.storage.session.set({ [storeKey]: cfg[cfgKey] });
@@ -305,8 +356,16 @@ const saveSession = (key, input) => {
 };
 
 urlInput.addEventListener('change', () => {
+  const v = urlInput.value.trim();
+  if ((GATEWAYS[el('gateway').value] || {}).noKey) {
+    // Ollama's URL gets its own slot — writing it to bf_url would overwrite the URL the other
+    // four gateways share, corrupting them for the rest of the Chrome session.
+    if (v) chrome.storage.local.set({ bf_ollama_url: v });
+    else   chrome.storage.local.remove('bf_ollama_url');
+    populateOllamaModels(v || GATEWAYS.ollama.urlHint);
+    return;
+  }
   saveSession('bf_url', urlInput);
-  if (el('gateway').value === 'ollama') populateOllamaModels(urlInput.value.trim());
 });
 keyInput.addEventListener('change',  () => saveSession('bf_key',  keyInput));
 key2Input.addEventListener('change', () => saveSession('bf_key2', key2Input));
@@ -316,8 +375,11 @@ el('model').addEventListener('change', () => {
   // Ollama model names (e.g. "llama3:latest") aren't valid ANTHROPIC_DEFAULT_MODEL values for
   // the real AI gateway serve.py talks to server-side (/lql/generate), and persisting them as
   // bf_model would corrupt the static list's "restore last pick" behavior when switching back
-  // to Bifrost/Portkey/etc. — skip both for Ollama.
-  if (el('gateway').value === 'ollama') return;
+  // to Bifrost/Portkey/etc. — so Ollama gets its own slot and skips the /model POST entirely.
+  if (el('gateway').value === 'ollama') {
+    if (model) chrome.storage.local.set({ bf_ollama_model: model });
+    return;
+  }
   chrome.storage.local.set({ bf_model: model });
   // Persist to .env's ANTHROPIC_DEFAULT_MODEL so server-side calls (/lql/generate) stay in
   // sync with whatever model the user is chatting with — best-effort, non-blocking.
@@ -864,6 +926,15 @@ el('fcnapp-community').addEventListener('click', () => {
   }
 
   async function applyGatewayUrl(url) {
+    // Ollama is a direct local connection with no gateway/Headroom routing to switch, and its
+    // URL lives in bf_ollama_url — never touch the visible field while it's the active gateway,
+    // or toggling this badge silently replaces the user's Ollama address with the proxy URL.
+    // bf_url is still updated (Ollama never reads it) so switching back to one of the other four
+    // gateways picks up the routing change instead of a URL from before the toggle.
+    if ((GATEWAYS[el('gateway').value] || {}).noKey) {
+      await chrome.storage.session.set({ bf_url: url });
+      return;
+    }
     // Bypass autoFillFromConfig()'s "only fill if empty" guard — this is an explicit
     // user action and must take effect on the very next request, not just on next reload.
     urlInput.value = url;
@@ -1056,6 +1127,10 @@ async function readOllamaStream(res, bubble, cursor) {
 // shared pattern for that; this is the one new piece of logic that must not be copy-pasted twice.
 function buildChatRequest(gw, baseUrl, model, messages) {
   if (gw === 'ollama') {
+    // No `tools` field: web search is Anthropic-server-side only, so it simply doesn't exist on
+    // this path. SYSTEM_PROMPT still advertises it — left as-is deliberately (rewriting the
+    // prompt per gateway is out of scope), so a local model may claim to have searched the web
+    // when it hasn't. Treat search-flavoured answers from Ollama as model recall, not retrieval.
     return {
       url: `${baseUrl}/v1/chat/completions`,
       body: JSON.stringify({
@@ -1108,6 +1183,12 @@ async function send(silent = false) {
   const key     = keyInput.value.trim();
   if (!baseUrl) { appendTurn('system', 'No endpoint URL — enter the gateway base URL above.'); return; }
   if (!profile.noKey && !key) { appendTurn('system', 'No API key — enter your key above.'); return; }
+  // populateOllamaModels() leaves an empty-valued "⚠ no models found" option when /api/tags
+  // fails — sending that yields `model: ""` and an opaque API 400. Say what's actually wrong.
+  if (gw === 'ollama' && !el('model').value) {
+    appendTurn('system', 'No Ollama model selected — check that Ollama is running and a model is installed.');
+    return;
+  }
 
   if (!silent) {
     const text = el('prompt').value.trim();
