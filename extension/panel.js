@@ -1012,6 +1012,74 @@ async function readStream(res, bubble, cursor) {
   return { out, inputTk, outputTk };
 }
 
+// Ollama's OpenAI-compatible SSE shape: `data: {"choices":[{"delta":{"content":"..."}}]}` per
+// token, a terminal chunk carrying `usage` (via stream_options.include_usage), ending on
+// `data: [DONE]`. Returns the same {out, inputTk, outputTk} shape readStream() does so the rest
+// of send() (markdown rendering, token display, history push) doesn't need to know which gateway
+// answered.
+async function readOllamaStream(res, bubble, cursor) {
+  const reader = res.body.getReader();
+  const dec    = new TextDecoder();
+  let buf = '', out = '', inputTk = 0, outputTk = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();
+
+    for (const line of lines) {
+      if (!line.startsWith('data:')) continue;
+      const raw = line.slice(5).trim();
+      if (raw === '[DONE]') break;
+      let ev; try { ev = JSON.parse(raw); } catch { continue; }
+
+      const delta = ev.choices?.[0]?.delta?.content;
+      if (delta) {
+        out += delta;
+        setRendered(bubble, renderMarkdown(out));
+        bubble.appendChild(cursor);
+        scrollLog();
+      }
+      if (ev.usage) {
+        inputTk  = ev.usage.prompt_tokens     ?? inputTk;
+        outputTk = ev.usage.completion_tokens ?? outputTk;
+      }
+    }
+  }
+  return { out, inputTk, outputTk };
+}
+
+// Shared by both /v1/messages call sites (send(), _startLqlScopingConversation()) — mirrors
+// their existing duplication of gw/profile/headers construction rather than introducing a new
+// shared pattern for that; this is the one new piece of logic that must not be copy-pasted twice.
+function buildChatRequest(gw, baseUrl, model, messages) {
+  if (gw === 'ollama') {
+    return {
+      url: `${baseUrl}/v1/chat/completions`,
+      body: JSON.stringify({
+        model,
+        messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+        stream: true,
+        stream_options: { include_usage: true },
+      }),
+    };
+  }
+  return {
+    url: `${baseUrl}/v1/messages`,
+    body: JSON.stringify({
+      model, max_tokens: MAX_TOKENS,
+      stream: true, system: SYSTEM_PROMPT, messages,
+      tools: [WEB_SEARCH_TOOL],
+    }),
+  };
+}
+
+function pickStreamReader(gw) {
+  return gw === 'ollama' ? readOllamaStream : readStream;
+}
+
 // ── Send ──────────────────────────────────────────────────────────────────
 // `history` is a single shared array mutated by several async flows (chat send,
 // LQL/CVE auto-report triggers, the LQL scoping conversation). Every entry point
@@ -1060,17 +1128,11 @@ async function send(silent = false) {
 
   try {
     setStatus('streaming…', 'busy');
-    const res = await fetch(`${baseUrl}/v1/messages`, {
-      method: 'POST', headers,
-      body: JSON.stringify({
-        model: el('model').value, max_tokens: MAX_TOKENS,
-        stream: true, system: SYSTEM_PROMPT, messages: history,
-        tools: [WEB_SEARCH_TOOL],
-      }),
-    });
+    const { url, body } = buildChatRequest(gw, baseUrl, el('model').value, history);
+    const res = await fetch(url, { method: 'POST', headers, body });
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
 
-    const { out, inputTk, outputTk } = await readStream(res, bubble, cursor);
+    const { out, inputTk, outputTk } = await pickStreamReader(gw)(res, bubble, cursor);
     cursor.remove();
     if (out) {
       const node = document.createElement('span');
@@ -2157,6 +2219,8 @@ function _regulatoryContext(regions = []) {
 // Shared minimalist template for FortiCNAPP Risk Hunting (LQL) and
 // Unified Attack Threat Surface (CVE) reports. This OVERRIDES the system prompt's
 // default Objective/Findings/Fix structure per its own precedence rule.
+// Note: local Ollama models may follow this template less reliably than Claude — no special
+// handling for that here, callers just get whatever the model returns.
 const INCIDENT_REPORT_TEMPLATE = `Use EXACTLY this format — a single Markdown table, nothing else. No title, no status/severity
 line, no separate remediation section, no other headings or sections before or after the table
 (a regulatory radar/risk-profile chart may precede it if one is supplied below — nothing else).
@@ -3047,16 +3111,10 @@ function _startLqlScopingConversation(objective, errorMsg) {
   const headers = profile.headers(key, gw === 'helicone' ? key2Input.value.trim() : undefined);
 
   setStatus('scoping…', 'busy');
-  fetch(`${baseUrl}/v1/messages`, {
-    method: 'POST', headers,
-    body: JSON.stringify({
-      model: el('model').value, max_tokens: MAX_TOKENS,
-      stream: true, system: SYSTEM_PROMPT, messages: history,
-      tools: [WEB_SEARCH_TOOL],
-    }),
-  }).then(async res => {
+  const { url, body } = buildChatRequest(gw, baseUrl, el('model').value, history);
+  fetch(url, { method: 'POST', headers, body }).then(async res => {
     if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
-    const { out } = await readStream(res, bubble, cursor);
+    const { out } = await pickStreamReader(gw)(res, bubble, cursor);
     cursor.remove();
     if (out) {
       const node = document.createElement('span');
