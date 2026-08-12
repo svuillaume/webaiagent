@@ -39,13 +39,22 @@ Extension pages (like the side panel) fetching a URL covered by `host_permission
 
 ### 2. PDF extraction (pdf.js)
 
-Vendor pdf.js's legacy/UMD build (not the ES-module build, to avoid changing how `panel.js` itself loads — it stays a classic script, no `type="module"`) under `extension/vendor/pdfjs/`: `pdf.min.js` + `pdf.worker.min.js`. The legacy build exposes a global `pdfjsLib`, loaded via a plain `<script src="vendor/pdfjs/pdf.min.js">` added to `panel.html`.
+**Correction from initial approval:** pdf.js dropped its global-script (UMD) build entirely as of v4.0 — current releases (confirmed against 6.2.108, the latest at design time) ship only ES modules (`.mjs`), in both the `build/` and `legacy/build/` trees of the `pdfjs-dist` npm package. There is no non-module distribution anymore. This doesn't change any decision already approved (still vendoring pdf.js, still client-side) — it changes how it's loaded.
+
+Vendor pdf.js's `build/` tree (not `legacy/build/` — that name no longer means "non-module," only "transpiled for older browsers," and this extension only targets Chrome) under `extension/vendor/pdfjs/`: `pdf.min.mjs` + `pdf.worker.min.mjs` (~1.7 MB combined, minified). Loaded from `panel.js` (which stays a classic script — no `type="module"` conversion needed) via dynamic `import()`, which works from a classic script context in MV3 extension pages:
+
+```js
+const pdfjsLib = await import(chrome.runtime.getURL('vendor/pdfjs/pdf.min.mjs'));
+pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('vendor/pdfjs/pdf.worker.min.mjs');
+```
 
 Flow: `pdfjsLib.getDocument({ data: arrayBuffer }).promise` → for each page, `page.getTextContent()` → join text items with spaces/newlines in reading order → truncate to `PAGE_MAX_CHARS` (the same 12000-char constant TL;DR already uses for HTML pages — no new truncation logic, same downstream summarization prompt).
 
+**CSP:** no `unsafe-eval` needed. Text extraction (`getDocument`/`getTextContent`) never touches the PostScript-function-compilation path (used only for shading/rendering, which this feature never does), and even that path compiles via WebAssembly first — which Chrome MV3's baseline extension-page CSP already permits (`wasm-unsafe-eval` is part of MV3's non-relaxable minimum CSP), not plain `eval`. No CSP change needed here beyond what §5 covers for the worker file itself.
+
 Two PDF-specific error cases (see also §4):
 - **No text layer** (scanned/image-only PDF): every page's `getTextContent()` returns empty items. Detected explicitly and surfaced as a clear message rather than silently summarizing nothing.
-- **Encrypted/password-protected PDF**: pdf.js throws `PasswordException` — caught and surfaced as a clear, specific message rather than a generic parse error.
+- **Encrypted/password-protected PDF**: pdf.js throws an error with `name === 'PasswordException'` (stable across versions, confirmed unchanged in 6.2.108) — caught and surfaced as a clear, specific message rather than a generic parse error.
 
 ### 3. DOCX extraction (hand-rolled, no dependency)
 
@@ -71,8 +80,8 @@ The existing `withPage()` wrapper (`panel.js:839`) already catches any exception
 
 ### 5. Manifest/CSP changes
 
-- `web_accessible_resources`: likely needs an entry for `vendor/pdfjs/pdf.worker.min.js` (pdf.js loads its worker as a separate script file). Whether this is actually required for an extension page loading its own bundled worker (vs. a content script/web page needing access) will be verified during implementation rather than assumed here.
-- CSP `worker-src`: likely **not** needed — it isn't currently set, so it inherits from `script-src 'self'`, and the worker file lives under the same extension origin. Verified during implementation, not assumed.
+- `web_accessible_resources`: add an entry for `vendor/pdfjs/*` (covers both `pdf.min.mjs` and `pdf.worker.min.mjs`). pdf.js instantiates its worker internally as `new Worker(workerSrc, { type: "module" })` once given a resolvable URL via `GlobalWorkerOptions.workerSrc` — MV3 practice is that this needs `web_accessible_resources` even when the loading page is the extension's own, since worker instantiation is treated as a fetchable-resource access, not an internal script `import`. The implementer should still verify this in practice (load the extension, confirm no "resource not web accessible" console error) rather than trust this note alone.
+- CSP: **no changes needed.** No `unsafe-eval` (see §2 — text extraction never needs it, and MV3's baseline CSP already grants `wasm-unsafe-eval` for the WebAssembly path pdf.js does use elsewhere). No `worker-src` addition needed — it isn't currently set, so it inherits from `script-src 'self'`, and the worker file lives under the same extension origin.
 - No `connect-src` change needed (see §1).
 
 ## Out of scope
