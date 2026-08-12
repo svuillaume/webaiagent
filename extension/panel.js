@@ -148,6 +148,14 @@ function applyGatewayProfile(gw) {
   urlInput.placeholder          = p.urlHint;
   keyInput.placeholder          = p.keyHint;
   el('key-label').textContent   = p.keyLabel;
+
+  // The other four gateways get their URL exclusively from serve.py's /config or the
+  // bundled config.json — #url-input stays permanently hidden for them, as it always has.
+  // Ollama has no server-side config source, so it's the one profile where the user needs
+  // to see and edit this field directly.
+  urlInput.style.display        = p.noKey ? '' : 'none';
+  el('url-label').style.display = p.noKey ? '' : 'none';
+  if (p.noKey && !urlInput.value) urlInput.value = p.urlHint;
 }
 
 el('gateway').addEventListener('change', () => {
@@ -981,10 +989,12 @@ function guardBusy() {
 async function send(silent = false) {
   if (busy) return;
 
+  const gw      = el('gateway').value || 'bifrost';
+  const profile = GATEWAYS[gw] || GATEWAYS.bifrost;
   const baseUrl = urlInput.value.trim().replace(/\/+$/, '');
   const key     = keyInput.value.trim();
   if (!baseUrl) { appendTurn('system', 'No endpoint URL — enter the gateway base URL above.'); return; }
-  if (!key)     { appendTurn('system', 'No API key — enter your key above.'); return; }
+  if (!profile.noKey && !key) { appendTurn('system', 'No API key — enter your key above.'); return; }
 
   if (!silent) {
     const text = el('prompt').value.trim();
@@ -1001,8 +1011,6 @@ async function send(silent = false) {
   busy = true;
   el('send').disabled = true;
 
-  const gw      = el('gateway').value || 'bifrost';
-  const profile = GATEWAYS[gw] || GATEWAYS.bifrost;
   const headers = profile.headers(key, gw === 'helicone' ? key2Input.value.trim() : undefined);
 
   try {
