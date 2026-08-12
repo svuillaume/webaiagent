@@ -101,6 +101,8 @@ const urlInput    = el('url-input');
 const keyInput    = el('key-input');
 const key2Input   = el('key2-input');   // hidden — holds Helicone secondary auth key
 
+const STATIC_MODEL_OPTIONS_HTML = el('model').innerHTML;
+
 const setStatus = (text, state = '') => {
   el('status').textContent = text;
   el('status').className   = state;
@@ -139,6 +141,9 @@ chrome.storage.local.get(['bf_model', 'bf_gateway'], ({ bf_model, bf_gateway }) 
   if (bf_gateway && GATEWAYS[bf_gateway]) {
     el('gateway').value = bf_gateway;
     applyGatewayProfile(bf_gateway);
+    if (bf_gateway === 'ollama') {
+      populateOllamaModels(urlInput.value.trim() || 'http://localhost:11434');
+    }
   }
   updateInvestigateAvailability();
 });
@@ -158,10 +163,35 @@ function applyGatewayProfile(gw) {
   if (p.noKey && !urlInput.value) urlInput.value = p.urlHint;
 }
 
+async function restoreStaticModelOptions() {
+  const sel = el('model');
+  sel.innerHTML = STATIC_MODEL_OPTIONS_HTML;
+  const { bf_model } = await chrome.storage.local.get(['bf_model']);
+  if (bf_model) sel.value = bf_model;
+}
+
+async function populateOllamaModels(baseUrl) {
+  const sel = el('model');
+  try {
+    const res = await fetch(`${baseUrl}/api/tags`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data   = await res.json();
+    const models = data.models || [];
+    if (!models.length) throw new Error('no models installed');
+    sel.innerHTML = models.map(m => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
+    setStatus(`${models.length} ollama model${models.length !== 1 ? 's' : ''}`, 'ok');
+  } catch (err) {
+    sel.innerHTML = '<option value="" disabled selected>⚠ no models found</option>';
+    setStatus(`ollama: ${err.message}`, 'err');
+  }
+}
+
 el('gateway').addEventListener('change', () => {
   const gw = el('gateway').value;
   applyGatewayProfile(gw);
   chrome.storage.local.set({ bf_gateway: gw });
+  if (gw === 'ollama') populateOllamaModels(urlInput.value.trim());
+  else                 restoreStaticModelOptions();
 });
 
 async function autoFillFromConfig() {
@@ -267,13 +297,19 @@ const saveSession = (key, input) => {
   v ? chrome.storage.session.set({ [key]: v }) : chrome.storage.session.remove(key);
 };
 
-urlInput.addEventListener('change',  () => saveSession('bf_url',  urlInput));
+urlInput.addEventListener('change', () => {
+  saveSession('bf_url', urlInput);
+  if (el('gateway').value === 'ollama') populateOllamaModels(urlInput.value.trim());
+});
 keyInput.addEventListener('change',  () => saveSession('bf_key',  keyInput));
 key2Input.addEventListener('change', () => saveSession('bf_key2', key2Input));
 el('model').addEventListener('change', () => {
   const model = el('model').value;
   chrome.storage.local.set({ bf_model: model });
   updateInvestigateAvailability();
+  // Ollama model names (e.g. "llama3:latest") aren't valid ANTHROPIC_DEFAULT_MODEL values for
+  // the real AI gateway serve.py talks to server-side (/lql/generate) — never persist them there.
+  if (el('gateway').value === 'ollama') return;
   // Persist to .env's ANTHROPIC_DEFAULT_MODEL so server-side calls (/lql/generate) stay in
   // sync with whatever model the user is chatting with — best-effort, non-blocking.
   fetch(BASE_URL + '/model', {
