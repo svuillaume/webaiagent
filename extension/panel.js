@@ -142,7 +142,14 @@ chrome.storage.local.get(['bf_model', 'bf_gateway'], ({ bf_model, bf_gateway }) 
     el('gateway').value = bf_gateway;
     applyGatewayProfile(bf_gateway);
     if (bf_gateway === 'ollama') {
-      populateOllamaModels(urlInput.value.trim() || 'http://localhost:11434');
+      // urlInput.value may not be populated yet here — it's filled by the sibling
+      // chrome.storage.session.get(['bf_url', ...]) callback above, which has no guaranteed
+      // ordering relative to this chrome.storage.local.get callback. Read bf_url directly from
+      // session storage so a saved custom Ollama URL isn't silently dropped in favor of the
+      // localhost default when the other callback happens to resolve second.
+      chrome.storage.session.get(['bf_url'], ({ bf_url }) => {
+        populateOllamaModels((bf_url || urlInput.value).trim() || 'http://localhost:11434');
+      });
     }
   }
   updateInvestigateAvailability();
@@ -305,11 +312,13 @@ keyInput.addEventListener('change',  () => saveSession('bf_key',  keyInput));
 key2Input.addEventListener('change', () => saveSession('bf_key2', key2Input));
 el('model').addEventListener('change', () => {
   const model = el('model').value;
-  chrome.storage.local.set({ bf_model: model });
   updateInvestigateAvailability();
   // Ollama model names (e.g. "llama3:latest") aren't valid ANTHROPIC_DEFAULT_MODEL values for
-  // the real AI gateway serve.py talks to server-side (/lql/generate) — never persist them there.
+  // the real AI gateway serve.py talks to server-side (/lql/generate), and persisting them as
+  // bf_model would corrupt the static list's "restore last pick" behavior when switching back
+  // to Bifrost/Portkey/etc. — skip both for Ollama.
   if (el('gateway').value === 'ollama') return;
+  chrome.storage.local.set({ bf_model: model });
   // Persist to .env's ANTHROPIC_DEFAULT_MODEL so server-side calls (/lql/generate) stay in
   // sync with whatever model the user is chatting with — best-effort, non-blocking.
   fetch(BASE_URL + '/model', {
