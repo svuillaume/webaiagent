@@ -8,7 +8,10 @@
   "content_security_policy": {
     "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https://api.github.com https://raw.githubusercontent.com https: http://localhost:* http://127.0.0.1:*; img-src 'self' data:"
   },
-  "web_accessible_resources": [{ "resources": ["config.json"], "matches": ["<all_urls>"] }],
+  "web_accessible_resources": [
+    { "resources": ["config.json"], "matches": ["<all_urls>"] },
+    { "resources": ["vendor/pdfjs/*"], "matches": ["<all_urls>"] }
+  ],
   "content_scripts": [{
     "matches": ["https://*/*", "http://*/*"],
     "js": ["content.js"],
