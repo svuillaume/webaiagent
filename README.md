@@ -385,7 +385,7 @@ The `headroom` service is inert until `HEADROOM_ENABLED=1`, so leaving it runnin
 ```
 Chrome Extension (extension/)
   │
-  ├─ Chat ──────────► AI Gateway (Bifrost / Portkey / LiteLLM / Helicone)      [HEADROOM_ENABLED=0]
+  ├─ Chat ──────────► AI Gateway (Bifrost / Portkey / LiteLLM / Helicone / Ollama)  [HEADROOM_ENABLED=0]
   │              or ► serve.py /proxy ► Headroom sidecar ► AI Gateway         [HEADROOM_ENABLED=1]
   │                        └──► Claude API  (web_search runs server-side)
   │

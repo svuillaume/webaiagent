@@ -1,7 +1,7 @@
 # Ollama Connector — Design
 
 **Date:** 2026-08-12
-**Status:** Approved, pending implementation
+**Status:** Implemented
 
 ## Goal
 
