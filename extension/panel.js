@@ -78,6 +78,14 @@ const GATEWAYS = {
       ...(heliconeKey ? { 'helicone-auth': `Bearer ${heliconeKey}` } : {}),
     }),
   },
+  ollama: {
+    label:    '🦙 Ollama',
+    urlHint:  'http://localhost:11434',
+    keyHint:  '',
+    keyLabel: '',
+    noKey:    true,
+    headers: () => ({ 'Content-Type': 'application/json' }),
+  },
 };
 
 const WEB_SEARCH_TOOL = { type: 'web_search_20260209', name: 'web_search' };
