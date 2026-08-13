@@ -799,6 +799,35 @@ el('clear').addEventListener('click', () => {
   setStatus('—');
 });
 
+// Loaded via dynamic import() since pdf.js ships ES-modules-only (no UMD/global build as of
+// v4.0+) — panel.js itself stays a classic script, this is the one place that needs `import()`.
+async function extractPdfText(arrayBuffer) {
+  const pdfjsLib = await import(chrome.runtime.getURL('vendor/pdfjs/pdf.min.mjs'));
+  pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('vendor/pdfjs/pdf.worker.min.mjs');
+
+  let doc;
+  try {
+    doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  } catch (err) {
+    if (err?.name === 'PasswordException') throw new Error('This PDF is password-protected.');
+    throw err;
+  }
+
+  let text = '';
+  for (let i = 1; i <= doc.numPages; i++) {
+    const page    = await doc.getPage(i);
+    const content = await page.getTextContent();
+    text += content.items.map(item => item.str).join(' ') + '\n\n';
+  }
+
+  text = text.trim();
+  if (!text) {
+    throw new Error(
+      'This PDF appears to be scanned/image-based with no extractable text — OCR isn\'t supported.');
+  }
+  return text;
+}
+
 // ── Page reader ───────────────────────────────────────────────────────────
 async function readCurrentPage() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
