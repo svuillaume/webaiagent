@@ -7,6 +7,8 @@ const BASE_URL       = 'http://localhost:45321';
 // truncates the table mid-row, silently dropping resources from the report.
 const MAX_TOKENS     = 8192;
 const PAGE_MAX_CHARS = 12000;
+// Ceiling on what TL;DR's PDF/DOCX sniffer will pull into memory (see tryReadAsDocument).
+const MAX_DOC_BYTES  = 50 * 1024 * 1024;
 const SYSTEM_PROMPT = `You are a security engineer. For security findings, answer in plain Markdown — no exec-summary prose, no filler, no walls of text.
 
 ## Structure
@@ -805,37 +807,67 @@ async function extractPdfText(arrayBuffer) {
   const pdfjsLib = await import(chrome.runtime.getURL('vendor/pdfjs/pdf.min.mjs'));
   pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('vendor/pdfjs/pdf.worker.min.mjs');
 
-  let doc;
+  const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
   try {
-    doc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-  } catch (err) {
-    if (err?.name === 'PasswordException') throw new Error('This PDF is password-protected.');
-    throw err;
-  }
+    let doc;
+    try {
+      doc = await loadingTask.promise;
+    } catch (err) {
+      if (err?.name === 'PasswordException') throw new Error('This PDF is password-protected.');
+      throw err;
+    }
 
-  let text = '';
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page    = await doc.getPage(i);
-    const content = await page.getTextContent();
-    text += content.items.map(item => item.str).join(' ') + '\n\n';
-  }
+    // Stop as soon as we have enough text: the caller truncates to PAGE_MAX_CHARS anyway, so
+    // walking every page of a 500-page compliance PDF would block the panel to produce ~97%
+    // discarded text. A textless (scanned) PDF still walks the whole doc and ends up empty
+    // below, which is what the no-text-layer check needs.
+    let text = '';
+    try {
+      for (let i = 1; i <= doc.numPages && text.length < PAGE_MAX_CHARS; i++) {
+        const page    = await doc.getPage(i);
+        const content = await page.getTextContent();
+        text += content.items.map(item => item.str).join(' ') + '\n\n';
+      }
+    } catch {
+      // Anything pdf.js throws mid-extraction (missing CMaps for CJK fonts, a malformed page
+      // tree, …) is an internal message that means nothing to the user — surface one clear line.
+      throw new Error('Couldn\'t extract text from this PDF.');
+    }
 
-  text = text.trim();
-  if (!text) {
-    throw new Error(
-      'This PDF appears to be scanned/image-based with no extractable text — OCR isn\'t supported.');
+    text = text.trim();
+    if (!text) {
+      throw new Error(
+        'This PDF appears to be scanned/image-based with no extractable text — OCR isn\'t supported.');
+    }
+    return text;
+  } finally {
+    // Releases the pdf.js worker and the document's page cache — without this they stay resident
+    // for the panel's lifetime. Cleanup failure must never mask the real error being thrown.
+    try { await loadingTask.destroy(); } catch { /* ignore */ }
   }
-  return text;
+}
+
+// Thin wrapper whose only job is turning every failure mode into one friendly message.
+async function extractDocxText(arrayBuffer) {
+  const NOT_A_DOCX = () => new Error('Couldn\'t read this as a Word document.');
+  try {
+    return await readDocxDocumentXml(arrayBuffer, NOT_A_DOCX);
+  } catch {
+    // Every intentional failure below already throws NOT_A_DOCX(); this also catches the
+    // unintentional ones — a corrupt archive with a bogus offset makes DataView reads throw
+    // `RangeError: Offset is outside the bounds of the DataView`, which would otherwise reach
+    // the user verbatim. Same message either way, so re-throwing a fresh one loses nothing.
+    throw NOT_A_DOCX();
+  }
 }
 
 // Minimal ZIP reader — extracts one named entry (word/document.xml) via the End-Of-Central-
 // Directory record. Central-directory sizes are used (not the local file header's, which can be
 // zeroed out under ZIP's optional streaming/data-descriptor mode) so this works regardless of
 // which tool wrote the .docx (Word desktop, Word Online, LibreOffice, python-docx, ...).
-async function extractDocxText(arrayBuffer) {
+async function readDocxDocumentXml(arrayBuffer, NOT_A_DOCX) {
   const bytes = new Uint8Array(arrayBuffer);
   const view  = new DataView(arrayBuffer);
-  const NOT_A_DOCX = () => new Error('Couldn\'t read this as a Word document.');
 
   const EOCD_SIG    = 0x06054b50;
   const searchStart = Math.max(0, bytes.length - 65557); // 22-byte record + up to 65535-byte comment
@@ -889,10 +921,25 @@ async function extractDocxText(arrayBuffer) {
   const xmlDoc  = new DOMParser().parseFromString(xmlText, 'application/xml');
   if (xmlDoc.getElementsByTagName('parsererror').length) throw NOT_A_DOCX();
 
-  let text = '';
-  for (const run of xmlDoc.getElementsByTagNameNS('*', 't')) text += run.textContent + ' ';
+  // Walk <w:p> paragraphs rather than every <w:t> run: runs split mid-sentence (and even mid-word)
+  // on formatting/spell-check boundaries, so runs are concatenated with nothing between them and
+  // paragraphs are joined with '\n\n' — the same separator the HTML scrape path produces.
+  const paragraphs = [];
+  for (const p of xmlDoc.getElementsByTagNameNS('*', 'p')) {
+    // A text box nests a whole <w:p> inside another one; the outer paragraph already collected
+    // its runs, so emitting the inner one again would duplicate that text.
+    let nested = false;
+    for (let a = p.parentNode; a; a = a.parentNode) {
+      if (a.localName === 'p') { nested = true; break; }
+    }
+    if (nested) continue;
+    let para = '';
+    for (const run of p.getElementsByTagNameNS('*', 't')) para += run.textContent;
+    para = para.trim();
+    if (para) paragraphs.push(para);
+  }
 
-  text = text.trim();
+  const text = paragraphs.join('\n\n').trim();
   if (!text) throw NOT_A_DOCX();
   return text;
 }
@@ -909,6 +956,10 @@ async function tryReadAsDocument(tab) {
   try {
     const res = await fetch(tab.url, { credentials: 'include' });
     if (!res.ok) return null;
+    // Don't buffer a whole large binary (installer, dataset, huge scan) into the panel's heap
+    // just to look at 4 magic bytes — treat anything oversized as "not a document we handle".
+    // Content-Length is absent under chunked encoding; nothing to check then, so carry on.
+    if (Number(res.headers.get('content-length')) > MAX_DOC_BYTES) return null;
     buf = await res.arrayBuffer();
   } catch {
     return null;
@@ -919,8 +970,16 @@ async function tryReadAsDocument(tab) {
   const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04; // PK\x03\x04
   if (!isPdf && !isZip) return null;
 
+  // `kind` tells the caller this text came out of a binary document rather than a live page —
+  // the TL;DR prompt uses it to drop the "link to a URL on the page" citation rule, which
+  // extracted PDF/DOCX text can only satisfy by inventing URLs.
   const text = isPdf ? await extractPdfText(buf) : await extractDocxText(buf);
-  return { title: tab.title || tab.url, url: tab.url, text: text.slice(0, PAGE_MAX_CHARS) };
+  return {
+    title: tab.title || tab.url,
+    url:   tab.url,
+    text:  text.slice(0, PAGE_MAX_CHARS),
+    kind:  isPdf ? 'pdf' : 'docx',
+  };
 }
 
 async function readCurrentPage() {
@@ -938,7 +997,7 @@ async function readCurrentPage() {
       clone.querySelectorAll('script,style,noscript,nav,footer,aside,iframe').forEach(n => n.remove());
       const text = (clone.body?.innerText || clone.body?.textContent || '')
         .replace(/\s{3,}/g, '\n\n').trim().slice(0, maxChars);
-      return { title: document.title, url: location.href, text };
+      return { title: document.title, url: location.href, text, kind: 'html' };
     },
   });
   return result;
@@ -1142,6 +1201,22 @@ el('read-page').addEventListener('click', () => withPage('read-page', async page
 
 el('tldr').addEventListener('click', () => withPage('tldr', async page => {
   if (guardBusy()) return;
+  if (!page.text) {
+    appendTurn('system', 'No content found — this page may be empty, or the document couldn\'t be fetched ' +
+      '(non-HTTPS document URLs and some auth-walled documents aren\'t supported).');
+    setStatus('no content', 'err');
+    return;
+  }
+  // Extracted PDF/DOCX text has no in-page links to cite, so the HTML citation rule ("link to a
+  // URL actually on the page, never omit") can only be satisfied by fabricating a source URL —
+  // the worst failure mode for a summary of a compliance or vendor security report.
+  const isDoc = page.kind === 'pdf' || page.kind === 'docx';
+  const citation = isDoc
+    ? `This text was extracted from a ${page.kind === 'pdf' ? 'PDF' : 'Word'} document, not a live web page — ` +
+      'cite page or section references where the extracted text provides them (e.g. page numbers, headings), ' +
+      'and do not include markdown links or invent a source URL. '
+    : 'Always cite sources: end each bullet, or each topic group, with a markdown link to the most relevant URL ' +
+      'actually on the page — never omit this, never invent a URL. ';
   history.push({ role: 'user',      content: pageCtx(page) });
   history.push({ role: 'assistant', content: 'Page loaded.' });
   history.push({ role: 'user',      content:
@@ -1151,8 +1226,7 @@ el('tldr').addEventListener('click', () => withPage('tldr', async page => {
     'If the page covers multiple distinct topics (or, for a changelog/release-notes page, multiple months or ' +
     'versions), group bullets under a short "### <topic>" heading per group — otherwise just a flat bullet list, ' +
     'no headings needed for a single narrow topic. ' +
-    'Always cite sources: end each bullet, or each topic group, with a markdown link to the most relevant URL ' +
-    'actually on the page — never omit this, never invent a URL. ' +
+    citation +
     'Start directly with the first bullet or heading — no preamble, no "Here is the summary" or similar opener, ' +
     'not even if you look something up mid-answer and resume afterward.' });
   appendTurn('system', `📄 TL;DR — "${page.title}"`);
