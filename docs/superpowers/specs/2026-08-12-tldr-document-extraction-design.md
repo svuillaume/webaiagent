@@ -50,7 +50,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = chrome.runtime.getURL('vendor/pdfjs/pdf
 
 Flow: `pdfjsLib.getDocument({ data: arrayBuffer }).promise` → for each page, `page.getTextContent()` → join text items with spaces/newlines in reading order → truncate to `PAGE_MAX_CHARS` (the same 12000-char constant TL;DR already uses for HTML pages — no new truncation logic, same downstream summarization prompt).
 
-**CSP:** no `unsafe-eval` needed. Text extraction (`getDocument`/`getTextContent`) never touches the PostScript-function-compilation path (used only for shading/rendering, which this feature never does), and even that path compiles via WebAssembly first — which Chrome MV3's baseline extension-page CSP already permits (`wasm-unsafe-eval` is part of MV3's non-relaxable minimum CSP), not plain `eval`. No CSP change needed here beyond what §5 covers for the worker file itself.
+**CSP:** no `unsafe-eval` needed. Text extraction (`getDocument`/`getTextContent`) never touches the PostScript-function-compilation path (used only for shading/rendering, which this feature never does), and that path compiles via WebAssembly rather than plain `eval` anyway. To be precise about MV3 here (an earlier draft of this section overstated it): `wasm-unsafe-eval` is a source expression MV3 *permits* an extension to add to its own `script-src` — it is not granted by any baseline/non-relaxable default. This extension declares `script-src 'self'` with no `wasm-unsafe-eval`, so WebAssembly is currently blocked in its extension pages. That's fine for this feature: in the vendored build, WASM is only used for image decoding (JPX/QCMS), which text extraction never reaches. No CSP change needed here beyond what §5 covers for the worker file itself.
 
 Two PDF-specific error cases (see also §4):
 - **No text layer** (scanned/image-only PDF): every page's `getTextContent()` returns empty items. Detected explicitly and surfaced as a clear message rather than silently summarizing nothing.
@@ -62,7 +62,7 @@ A `.docx` is a ZIP archive of XML parts. No library needed:
 
 1. Parse the ZIP local file headers by hand (well-documented binary format: signature, filename, compression method, compressed size) to locate the `word/document.xml` entry.
 2. Decompress it with the browser's native `DecompressionStream('deflate-raw')` — available in Chrome for years, no library needed.
-3. Parse the resulting XML with `DOMParser` and concatenate the text content of every `<w:t>` element in document order — that's where OOXML stores visible run text.
+3. Parse the resulting XML with `DOMParser` and walk `<w:p>` paragraphs in document order, concatenating each paragraph's `<w:t>` runs (OOXML splits runs mid-word on formatting/rsid boundaries, so runs are joined with nothing between them) and joining paragraphs with `\n\n` — the same separator the HTML scrape path produces.
 4. Truncate to `PAGE_MAX_CHARS`, same as everything else.
 
 Error case: if `word/document.xml` isn't found in the ZIP (corrupt file, or a legacy `.doc` mislabeled `.docx`), surface "Couldn't read this as a Word document" rather than a cryptic exception.
@@ -81,7 +81,7 @@ The existing `withPage()` wrapper (`panel.js:839`) already catches any exception
 ### 5. Manifest/CSP changes
 
 - `web_accessible_resources`: add an entry for `vendor/pdfjs/*` (covers both `pdf.min.mjs` and `pdf.worker.min.mjs`). pdf.js instantiates its worker internally as `new Worker(workerSrc, { type: "module" })` once given a resolvable URL via `GlobalWorkerOptions.workerSrc` — MV3 practice is that this needs `web_accessible_resources` even when the loading page is the extension's own, since worker instantiation is treated as a fetchable-resource access, not an internal script `import`. The implementer should still verify this in practice (load the extension, confirm no "resource not web accessible" console error) rather than trust this note alone.
-- CSP: **no changes needed.** No `unsafe-eval` (see §2 — text extraction never needs it, and MV3's baseline CSP already grants `wasm-unsafe-eval` for the WebAssembly path pdf.js does use elsewhere). No `worker-src` addition needed — it isn't currently set, so it inherits from `script-src 'self'`, and the worker file lives under the same extension origin.
+- CSP: **no changes needed.** No `unsafe-eval` (see §2 — text extraction never needs it; nor is `wasm-unsafe-eval` needed, since the WebAssembly path pdf.js uses elsewhere is image decoding, which this feature never reaches). No `worker-src` addition needed — it isn't currently set, so it inherits from `script-src 'self'`, and the worker file lives under the same extension origin.
 - No `connect-src` change needed (see §1).
 
 ## Out of scope
