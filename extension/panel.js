@@ -828,6 +828,75 @@ async function extractPdfText(arrayBuffer) {
   return text;
 }
 
+// Minimal ZIP reader — extracts one named entry (word/document.xml) via the End-Of-Central-
+// Directory record. Central-directory sizes are used (not the local file header's, which can be
+// zeroed out under ZIP's optional streaming/data-descriptor mode) so this works regardless of
+// which tool wrote the .docx (Word desktop, Word Online, LibreOffice, python-docx, ...).
+async function extractDocxText(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const view  = new DataView(arrayBuffer);
+  const NOT_A_DOCX = () => new Error('Couldn\'t read this as a Word document.');
+
+  const EOCD_SIG    = 0x06054b50;
+  const searchStart = Math.max(0, bytes.length - 65557); // 22-byte record + up to 65535-byte comment
+  let eocdOffset = -1;
+  for (let i = bytes.length - 22; i >= searchStart; i--) {
+    if (view.getUint32(i, true) === EOCD_SIG) { eocdOffset = i; break; }
+  }
+  if (eocdOffset === -1) throw NOT_A_DOCX();
+
+  const entryCount    = view.getUint16(eocdOffset + 10, true);
+  const centralDirOff = view.getUint32(eocdOffset + 16, true);
+
+  const CENTRAL_SIG = 0x02014b50;
+  let offset = centralDirOff;
+  let target = null;
+  for (let i = 0; i < entryCount; i++) {
+    if (view.getUint32(offset, true) !== CENTRAL_SIG) break;
+    const compMethod  = view.getUint16(offset + 10, true);
+    const compSize    = view.getUint32(offset + 20, true);
+    const nameLen     = view.getUint16(offset + 28, true);
+    const extraLen    = view.getUint16(offset + 30, true);
+    const commentLen  = view.getUint16(offset + 32, true);
+    const localOffset = view.getUint32(offset + 42, true);
+    const name = new TextDecoder().decode(bytes.subarray(offset + 46, offset + 46 + nameLen));
+    if (name === 'word/document.xml') {
+      target = { compMethod, compSize, localOffset };
+      break;
+    }
+    offset += 46 + nameLen + extraLen + commentLen;
+  }
+  if (!target) throw NOT_A_DOCX();
+
+  // The local file header precedes the actual compressed data; its own name/extra field lengths
+  // (which can differ from the central directory's) determine where the data actually starts.
+  const localNameLen  = view.getUint16(target.localOffset + 26, true);
+  const localExtraLen = view.getUint16(target.localOffset + 28, true);
+  const dataStart   = target.localOffset + 30 + localNameLen + localExtraLen;
+  const compressed  = bytes.subarray(dataStart, dataStart + target.compSize);
+
+  let xmlBytes;
+  if (target.compMethod === 0) {
+    xmlBytes = compressed; // stored, no compression
+  } else if (target.compMethod === 8) {
+    const stream = new Blob([compressed]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
+    xmlBytes = new Uint8Array(await new Response(stream).arrayBuffer());
+  } else {
+    throw NOT_A_DOCX(); // unsupported compression method
+  }
+
+  const xmlText = new TextDecoder('utf-8').decode(xmlBytes);
+  const xmlDoc  = new DOMParser().parseFromString(xmlText, 'application/xml');
+  if (xmlDoc.getElementsByTagName('parsererror').length) throw NOT_A_DOCX();
+
+  let text = '';
+  for (const run of xmlDoc.getElementsByTagNameNS('*', 't')) text += run.textContent + ' ';
+
+  text = text.trim();
+  if (!text) throw NOT_A_DOCX();
+  return text;
+}
+
 // ── Page reader ───────────────────────────────────────────────────────────
 async function readCurrentPage() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
