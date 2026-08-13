@@ -9,7 +9,10 @@ const MAX_TOKENS     = 8192;
 const PAGE_MAX_CHARS = 12000;
 // Ceiling on what TL;DR's PDF/DOCX sniffer will pull into memory (see tryReadAsDocument).
 const MAX_DOC_BYTES  = 50 * 1024 * 1024;
-const DOWNLOAD_FALLBACK_WINDOW_MS = 2 * 60 * 1000; // how recent a completed download can be to count
+// Deliberately short: this only has to cover navigate → switch to the side panel → click, which is
+// a matter of seconds. A longer window makes it far more likely that an unrelated HTML page visited
+// later accidentally picks up a stale download match.
+const DOWNLOAD_FALLBACK_WINDOW_MS = 45 * 1000; // how recent a completed download can be to count
 const SYSTEM_PROMPT = `You are a security engineer. For security findings, answer in plain Markdown — no exec-summary prose, no filler, no walls of text.
 
 ## Structure
@@ -982,13 +985,30 @@ async function extractDocumentText({ buf, isPdf }) {
 // same can happen for PDFs if the browser/user has it configured to download instead of view
 // inline). chrome.downloads.search() doesn't filter by extension directly, so that's done here
 // client-side against the small (limit: 5), already-sorted (newest first) result set.
+//
+// Candidates whose finalUrl this extension can't re-fetch are skipped rather than matched: a
+// blob: URL (client-side-generated document — the blob is almost certainly revoked by now) or a
+// plain non-localhost http: URL (blocked by manifest.json's host_permissions/CSP either way) would
+// otherwise match here and then fail the fetch, producing the misleading "link has expired" advice.
+//
+// The whole chrome.downloads.search() call is guarded: the API can be unavailable (blocked by
+// enterprise policy via ExtensionSettings → blocked_permissions, a realistic setup for this
+// product's audience). Returning null there degrades to the pre-existing behavior — fall through
+// to the DOM scrape — instead of throwing an error out of every TL;DR click on every page.
 async function findRecentDocumentDownload() {
-  const downloads = await chrome.downloads.search({
-    state: 'complete', orderBy: ['-endTime'], limit: 5,
-  });
+  let downloads;
+  try {
+    downloads = await chrome.downloads.search({
+      state: 'complete', orderBy: ['-endTime'], limit: 5,
+    });
+  } catch {
+    return null;
+  }
   const cutoff = Date.now() - DOWNLOAD_FALLBACK_WINDOW_MS;
+  const fetchable = u => /^https:\/\//i.test(u || '') || /^http:\/\/(localhost|127\.0\.0\.1)([:/]|$)/i.test(u || '');
   return downloads.find(d =>
-    /\.(pdf|docx)$/i.test(d.filename) && new Date(d.endTime).getTime() >= cutoff) || null;
+    /\.(pdf|docx)$/i.test(d.filename) && new Date(d.endTime).getTime() >= cutoff
+    && fetchable(d.finalUrl)) || null;
 }
 
 // Attempts to read `tab.url` as a PDF or DOCX document; if that finds nothing (including the
@@ -1026,7 +1046,16 @@ async function tryReadAsDocument(tab) {
   if (!downloadClassified) return null; // filename looked right but the bytes weren't actually a PDF/DOCX
 
   const { text, kind } = await extractDocumentText(downloadClassified);
-  return { title: download.filename.split(/[\\/]/).pop(), url: download.finalUrl, text, kind };
+  // `viaDownload` marks this as "not the tab you're looking at" so the caller can say so out loud —
+  // the tab-URL path above and the DOM-scrape path in readCurrentPage() deliberately don't set it.
+  // The query string is dropped from `url`: enterprise download links (S3 presigned, SharePoint /
+  // OneDrive) routinely carry signing tokens there, nothing re-fetches this URL afterwards, and it
+  // goes verbatim into the AI prompt via pageCtx().
+  return {
+    title: download.filename.split(/[\\/]/).pop() || download.finalUrl,
+    url:   download.finalUrl.split(/[?#]/)[0],
+    text, kind, viaDownload: true,
+  };
 }
 
 async function readCurrentPage() {
@@ -1276,7 +1305,11 @@ el('tldr').addEventListener('click', () => withPage('tldr', async page => {
     citation +
     'Start directly with the first bullet or heading — no preamble, no "Here is the summary" or similar opener, ' +
     'not even if you look something up mid-answer and resume afterward.' });
-  appendTurn('system', `📄 TL;DR — "${page.title}"`);
+  // Say it out loud when the text came from a recent download rather than the tab in front of the
+  // user — otherwise a stale download match looks identical to a summary of the page they're on.
+  appendTurn('system', page.viaDownload
+    ? `📄 TL;DR — downloaded file "${page.title}"`
+    : `📄 TL;DR — "${page.title}"`);
   el('read-page').classList.add('active');
   await send(true); // user turn already pushed above; silent avoids re-appending it
 }));
