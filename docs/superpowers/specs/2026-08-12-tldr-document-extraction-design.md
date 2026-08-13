@@ -1,7 +1,7 @@
 # TL;DR Document Extraction (PDF/DOCX) — Design
 
 **Date:** 2026-08-12
-**Status:** Approved, pending implementation
+**Status:** Implemented
 
 ## Goal
 
