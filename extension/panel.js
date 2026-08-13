@@ -9,6 +9,7 @@ const MAX_TOKENS     = 8192;
 const PAGE_MAX_CHARS = 12000;
 // Ceiling on what TL;DR's PDF/DOCX sniffer will pull into memory (see tryReadAsDocument).
 const MAX_DOC_BYTES  = 50 * 1024 * 1024;
+const DOWNLOAD_FALLBACK_WINDOW_MS = 2 * 60 * 1000; // how recent a completed download can be to count
 const SYSTEM_PROMPT = `You are a security engineer. For security findings, answer in plain Markdown — no exec-summary prose, no filler, no walls of text.
 
 ## Structure
@@ -945,41 +946,87 @@ async function readDocxDocumentXml(arrayBuffer, NOT_A_DOCX) {
 }
 
 // ── Page reader ───────────────────────────────────────────────────────────
-// Attempts to read `tab.url` as a PDF or DOCX document by fetching its raw bytes and checking
-// magic numbers (not Content-Type — many servers send generic application/octet-stream for
-// downloadable files, which would misdetect a real PDF/DOCX). Returns null for "not a document
-// we handle" so the caller falls back to the DOM-scrape path below — never throws for that case,
-// only for real parse failures once the bytes are confirmed to be a PDF/DOCX we're supposed to
-// be able to read.
-async function tryReadAsDocument(tab) {
-  let buf;
-  try {
-    const res = await fetch(tab.url, { credentials: 'include' });
-    if (!res.ok) return null;
-    // Don't buffer a whole large binary (installer, dataset, huge scan) into the panel's heap
-    // just to look at 4 magic bytes — treat anything oversized as "not a document we handle".
-    // Content-Length is absent under chunked encoding; nothing to check then, so carry on.
-    if (Number(res.headers.get('content-length')) > MAX_DOC_BYTES) return null;
-    buf = await res.arrayBuffer();
-  } catch {
-    return null;
-  }
+// Fetches `url` and returns its bytes plus a PDF/DOCX magic-number verdict, or `null` if the
+// magic bytes don't match either format (Content-Type isn't used for detection — many servers
+// send generic application/octet-stream for downloadable files) or the response is too large to
+// buffer (Content-Length over MAX_DOC_BYTES — don't materialize a whole installer/dataset/huge
+// scan into the panel's heap just to look at 4 bytes; Content-Length is absent under chunked
+// encoding, so nothing to check then, carry on). A network/fetch failure (including a non-2xx
+// status) THROWS rather than returning null — callers decide what that should mean for them,
+// since the tab-URL path and the download-fallback path react to a failed fetch differently.
+async function fetchAndClassifyDocument(url) {
+  const res = await fetch(url, { credentials: 'include' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  if (Number(res.headers.get('content-length')) > MAX_DOC_BYTES) return null;
+  const buf = await res.arrayBuffer();
 
   const bytes = new Uint8Array(buf.slice(0, 4));
   const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
   const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04; // PK\x03\x04
   if (!isPdf && !isZip) return null;
 
-  // `kind` tells the caller this text came out of a binary document rather than a live page —
-  // the TL;DR prompt uses it to drop the "link to a URL on the page" citation rule, which
-  // extracted PDF/DOCX text can only satisfy by inventing URLs.
+  return { buf, isPdf };
+}
+
+// `kind` tells the caller this text came out of a binary document rather than a live page — the
+// TL;DR prompt uses it to drop the "link to a URL on the page" citation rule, which extracted
+// PDF/DOCX text can only satisfy by inventing URLs.
+async function extractDocumentText({ buf, isPdf }) {
   const text = isPdf ? await extractPdfText(buf) : await extractDocxText(buf);
-  return {
-    title: tab.title || tab.url,
-    url:   tab.url,
-    text:  text.slice(0, PAGE_MAX_CHARS),
-    kind:  isPdf ? 'pdf' : 'docx',
-  };
+  return { text: text.slice(0, PAGE_MAX_CHARS), kind: isPdf ? 'pdf' : 'docx' };
+}
+
+// Looks for a PDF/DOCX download completed in the last DOWNLOAD_FALLBACK_WINDOW_MS — the fallback
+// for when Chrome itself doesn't leave a usable tab behind after navigating straight to a
+// document URL (it has no native DOCX renderer, so the tab closes once the download starts; the
+// same can happen for PDFs if the browser/user has it configured to download instead of view
+// inline). chrome.downloads.search() doesn't filter by extension directly, so that's done here
+// client-side against the small (limit: 5), already-sorted (newest first) result set.
+async function findRecentDocumentDownload() {
+  const downloads = await chrome.downloads.search({
+    state: 'complete', orderBy: ['-endTime'], limit: 5,
+  });
+  const cutoff = Date.now() - DOWNLOAD_FALLBACK_WINDOW_MS;
+  return downloads.find(d =>
+    /\.(pdf|docx)$/i.test(d.filename) && new Date(d.endTime).getTime() >= cutoff) || null;
+}
+
+// Attempts to read `tab.url` as a PDF or DOCX document; if that finds nothing (including the
+// case where Chrome closed the tab after the navigation resolved to a download), falls back to
+// checking whether a matching document finished downloading recently and re-fetching its source
+// URL. Returns null for "not a document we handle at all" so the caller falls back to the
+// DOM-scrape path below — never throws for that case, only for real parse failures once bytes
+// are confirmed to be a PDF/DOCX, or for a download-fallback fetch that fails (a distinct,
+// actionable error — the tab-URL path's own fetch failures stay silent/fall-through, matching
+// today's existing behavior exactly).
+async function tryReadAsDocument(tab) {
+  let classified = null;
+  try {
+    classified = await fetchAndClassifyDocument(tab.url);
+  } catch {
+    // Network/fetch failure reading the tab's own URL — treated the same as "not a document",
+    // matches today's existing fall-through behavior exactly.
+  }
+
+  if (classified) {
+    const { text, kind } = await extractDocumentText(classified);
+    return { title: tab.title || tab.url, url: tab.url, text, kind };
+  }
+
+  const download = await findRecentDocumentDownload();
+  if (!download) return null;
+
+  let downloadClassified;
+  try {
+    downloadClassified = await fetchAndClassifyDocument(download.finalUrl);
+  } catch {
+    throw new Error(
+      'The downloaded file\'s source link has expired — try downloading it again.');
+  }
+  if (!downloadClassified) return null; // filename looked right but the bytes weren't actually a PDF/DOCX
+
+  const { text, kind } = await extractDocumentText(downloadClassified);
+  return { title: download.filename.split(/[\\/]/).pop(), url: download.finalUrl, text, kind };
 }
 
 async function readCurrentPage() {
