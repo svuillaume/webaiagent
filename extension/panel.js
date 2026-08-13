@@ -898,9 +898,38 @@ async function extractDocxText(arrayBuffer) {
 }
 
 // ── Page reader ───────────────────────────────────────────────────────────
+// Attempts to read `tab.url` as a PDF or DOCX document by fetching its raw bytes and checking
+// magic numbers (not Content-Type — many servers send generic application/octet-stream for
+// downloadable files, which would misdetect a real PDF/DOCX). Returns null for "not a document
+// we handle" so the caller falls back to the DOM-scrape path below — never throws for that case,
+// only for real parse failures once the bytes are confirmed to be a PDF/DOCX we're supposed to
+// be able to read.
+async function tryReadAsDocument(tab) {
+  let buf;
+  try {
+    const res = await fetch(tab.url, { credentials: 'include' });
+    if (!res.ok) return null;
+    buf = await res.arrayBuffer();
+  } catch {
+    return null;
+  }
+
+  const bytes = new Uint8Array(buf.slice(0, 4));
+  const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46; // %PDF
+  const isZip = bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04; // PK\x03\x04
+  if (!isPdf && !isZip) return null;
+
+  const text = isPdf ? await extractPdfText(buf) : await extractDocxText(buf);
+  return { title: tab.title || tab.url, url: tab.url, text: text.slice(0, PAGE_MAX_CHARS) };
+}
+
 async function readCurrentPage() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error('No active tab found');
+
+  const doc = await tryReadAsDocument(tab);
+  if (doc) return doc;
+
   const [{ result }] = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     args:   [PAGE_MAX_CHARS],
