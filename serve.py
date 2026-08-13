@@ -305,7 +305,7 @@ def _fg_outbreaks_cached():
     try:
         req = urllib.request.Request(
             'https://www.fortiguard.com/rss/outbreakalert.xml',
-            headers={'User-Agent': 'Mozilla/5.0 FortiAIScout/1.0'},
+            headers={'User-Agent': 'Mozilla/5.0 FortiCNAPP AI Agent/1.0'},
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             xml_bytes = r.read()
@@ -357,7 +357,7 @@ def _fetch_cve_intel(cve: str) -> dict:
 
     def _get_json(url, headers=None, timeout=8):
         try:
-            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'FortiAIScout/1.0'})
+            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'FortiCNAPP AI Agent/1.0'})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read())
         except Exception:
@@ -396,7 +396,7 @@ def _fetch_cve_intel(cve: str) -> dict:
     # NVD CVSS
     nvd_data = _get_json(
         f'https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}',
-        headers={'User-Agent': 'FortiAIScout/1.0', 'Accept': 'application/json'},
+        headers={'User-Agent': 'FortiCNAPP AI Agent/1.0', 'Accept': 'application/json'},
         timeout=10,
     )
     if nvd_data and nvd_data.get('vulnerabilities'):
@@ -457,7 +457,7 @@ def _scrape_fg_outbreak(slug: str) -> dict:
     """Scrape a FortiGuard outbreak-alert page and return structured signals."""
     url = f'https://fortiguard.fortinet.com/outbreak-alert/{slug}'
     try:
-        req  = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 FortiAIScout/1.0'})
+        req  = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 FortiCNAPP AI Agent/1.0'})
         with urllib.request.urlopen(req, timeout=12) as r:
             html = r.read().decode('utf-8', errors='replace')
     except Exception:
@@ -1619,7 +1619,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         try:
             req = urllib.request.Request(f'{HEADROOM_URL}/stats-history',
-                                          headers={'User-Agent': 'FortiAIScout/1.0'})
+                                          headers={'User-Agent': 'FortiCNAPP AI Agent/1.0'})
             with urllib.request.urlopen(req, timeout=4) as r:
                 data = json.loads(r.read())
             lifetime      = data.get('lifetime', {})
@@ -2731,7 +2731,7 @@ LW_PROFILE = _lw_profile()
 account, api_key, api_secret = _lw_creds()
 LW_READY = bool(account and api_key and api_secret)
 
-print(f'FortiAIScout  →  http://localhost:{PORT}')
+print(f'FortiCNAPP AI Agent  →  http://localhost:{PORT}')
 print(f'Gateway       →  {current_upstream().rstrip("/")}/v1/*  key:{"ok" if VIRTUAL_KEY else "MISSING"}'
       f'{"  (via TokenIQ)" if _headroom_enabled() else ""}')
 print(f'FortiCNAPP    →  creds:{"ok" if LW_READY else "MISSING"}  cli:{"ok" if LW_AVAILABLE else "not found"}')

@@ -1,4 +1,4 @@
-# FortiAIScout — Chrome Extension
+# FortiCNAPP AI Agent — Chrome Extension
 
 > **License**: Apache 2.0 — see [LICENSE](LICENSE) | **Status**: Alpha — early-stage release for testing and feedback; expect rough edges and rapid change.
 
@@ -263,13 +263,13 @@ When the script shows green `[OK]`, the server is running.
 1. Open `chrome://extensions`
 2. Enable **Developer mode** (top-right toggle)
 3. Click **Load unpacked** → select the `extension/` folder
-4. Pin the FortiAIScout icon from the toolbar 🧩
+4. Pin the FortiCNAPP AI Agent icon from the toolbar 🧩
 
 ---
 
 ### Step 4 — Open and use it
 
-Click the FortiAIScout icon. The status dot should be **green**.
+Click the FortiCNAPP AI Agent icon. The status dot should be **green**.
 
 - Type anything in the chat box to start
 - Click **🔰 FortiCNAPP** for security tools

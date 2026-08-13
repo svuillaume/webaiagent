@@ -1,6 +1,14 @@
-# FortiAIScout — Release Notes
+# FortiCNAPP AI Agent — Release Notes
 
 Running log of notable features and changes. Newest entries at the top.
+
+---
+
+## 2026-08-12
+
+### Rebrand: FortiAIScout → FortiCNAPP AI Agent
+
+Renamed across every user-facing surface (extension manifest, panel/chatbox titles, chat sender labels, greeting message, PDF export, README/Release/CLAUDE docs) and internal identifiers (HTTP `User-Agent` headers, server startup banner).
 
 ---
 
