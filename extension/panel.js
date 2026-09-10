@@ -287,7 +287,7 @@ async function updateGatewayStatus() {
 el('gateway-toggle').addEventListener('click', async () => {
   const btn = el('gateway-toggle');
   btn.disabled = true;
-  const currentUrl = (await fetch(BASE_URL + '/config').then(r => r.json())).gateway_url || '';
+  const currentUrl = (await fetch('http://localhost:45321/config').then(r => r.json()).catch(() => ({}))).gateway_url || '';
   const isBifrost = currentUrl.includes('bifrost') || currentUrl.includes('proxy');
   const target = isBifrost ? 'ollama' : 'bifrost';
   const msg = `Switching to ${target}… this may take 10-15 seconds.`;
@@ -295,7 +295,7 @@ el('gateway-toggle').addEventListener('click', async () => {
   btn.textContent = `🔄 ${msg}`;
 
   try {
-    const res = await fetch(BASE_URL + '/gateway', {
+    const res = await fetch('http://localhost:45321/gateway', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ gateway: target }),
