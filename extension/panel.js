@@ -269,11 +269,10 @@ el('model').addEventListener('change', () => {
 
 async function updateGatewayStatus() {
   try {
-    const config = await fetch(BASE_URL + '/config').then(r => r.json()).catch(() => ({}));
-    const model = el('model').value || '';
+    const config = await fetch('http://localhost:45321/config').then(r => r.json()).catch(() => ({}));
     const url = config.gateway_url || '';
     let status = '—';
-    if (url.includes('localhost:11434') || url.includes('ollama')) {
+    if (url.includes('host.docker.internal:11434') || url.includes('localhost:11434') || url.includes('ollama')) {
       status = '✓ Ollama';
     } else if (url.includes('bifrost') || url.includes('proxy')) {
       status = '✓ Bifrost';
