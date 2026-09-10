@@ -267,54 +267,6 @@ el('model').addEventListener('change', () => {
   }).catch(() => { /* offline — local chat still uses the picked model regardless */ });
 });
 
-async function updateGatewayStatus() {
-  try {
-    const config = await fetch('http://localhost:45321/config').then(r => r.json()).catch(() => ({}));
-    const url = config.gateway_url || '';
-    let status = '—';
-    if (url.includes('host.docker.internal:11434') || url.includes('localhost:11434') || url.includes('ollama')) {
-      status = '✓ Ollama';
-    } else if (url.includes('bifrost') || url.includes('proxy')) {
-      status = '✓ Bifrost';
-    }
-    el('gateway-status').textContent = status;
-  } catch (err) {
-    el('gateway-status').textContent = '⚠ offline';
-  }
-}
-
-el('gateway-toggle').addEventListener('click', async () => {
-  const btn = el('gateway-toggle');
-  btn.disabled = true;
-  const currentUrl = (await fetch('http://localhost:45321/config').then(r => r.json()).catch(() => ({}))).gateway_url || '';
-  const isBifrost = currentUrl.includes('bifrost') || currentUrl.includes('proxy');
-  const target = isBifrost ? 'ollama' : 'bifrost';
-  const msg = `Switching to ${target}… this may take 10-15 seconds.`;
-  setStatus(msg, 'busy');
-  btn.textContent = `🔄 ${msg}`;
-
-  try {
-    const res = await fetch('http://localhost:45321/gateway', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ gateway: target }),
-    });
-    if (res.ok) {
-      setStatus(`Switched to ${target}`, 'ok');
-      setTimeout(() => { window.location.reload(); }, 500);
-    } else {
-      setStatus('Gateway switch failed', 'error');
-    }
-  } catch (err) {
-    setStatus(`Error: ${err.message}`, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = '🔄 Bifrost/Ollama';
-  }
-});
-
-updateGatewayStatus();
-setInterval(updateGatewayStatus, 5000);
 
 // ── Markdown renderer ─────────────────────────────────────────────────────
 // Escape before transform so model output cannot inject HTML.

@@ -1470,15 +1470,9 @@ a.ext-link:hover { color: var(--accent-d); }
       </select>
       <div class="admin-menu-label">LLM Model</div>
       <select id="model" class="admin-select">
-        <option value="claude-haiku-4-5" selected>haiku-4-5 ⚡</option>
-        <option value="claude-sonnet-4-6">sonnet-4-6</option>
-        <option value="claude-opus-4-8">opus-4-8</option>
-        <option value="deepseek-v4-flash">deepseek-v4-flash ⚡</option>
-        <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-        <option value="qwen2.5-coder:7b">qwen2.5-coder (Ollama)</option>
+        <option value="qwen2.5-coder:7b" selected>qwen2.5-coder:7b</option>
       </select>
-      <button id="gateway-toggle" class="chip admin-item" title="Switch between Bifrost (Claude) and Ollama (local)">🔄 Bifrost/Ollama</button>
-      <span id="gateway-status" class="admin-item" style="font-size:11px;color:var(--dim);text-align:center;margin-top:2px">—</span>
+      <span id="gateway-status" class="admin-item" style="font-size:11px;color:var(--ok);text-align:center;margin-top:2px">✓ Ollama (qwen2.5-coder)</span>
       <div class="fcnapp-sep"></div>
       <span id="routing-badge" class="admin-item headroom-badge" style="display:none"></span>
       <button id="dashboard-token" class="fcnapp-item admin-item" title="Open TokenSaving token-savings dashboard">📊 TokenSaving Dashboard</button>
