@@ -267,6 +267,23 @@ el('model').addEventListener('change', () => {
   }).catch(() => { /* offline — local chat still uses the picked model regardless */ });
 });
 
+async function updateGatewayStatus() {
+  try {
+    const config = await fetch(BASE_URL + '/config').then(r => r.json()).catch(() => ({}));
+    const model = el('model').value || '';
+    const url = config.gateway_url || '';
+    let status = '—';
+    if (url.includes('localhost:11434') || url.includes('ollama')) {
+      status = '✓ Ollama';
+    } else if (url.includes('bifrost') || url.includes('proxy')) {
+      status = '✓ Bifrost';
+    }
+    el('gateway-status').textContent = status;
+  } catch (err) {
+    el('gateway-status').textContent = '⚠ offline';
+  }
+}
+
 el('gateway-toggle').addEventListener('click', async () => {
   const btn = el('gateway-toggle');
   btn.disabled = true;
@@ -296,6 +313,9 @@ el('gateway-toggle').addEventListener('click', async () => {
     btn.textContent = '🔄 Bifrost/Ollama';
   }
 });
+
+updateGatewayStatus();
+setInterval(updateGatewayStatus, 5000);
 
 // ── Markdown renderer ─────────────────────────────────────────────────────
 // Escape before transform so model output cannot inject HTML.
