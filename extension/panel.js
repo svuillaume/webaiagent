@@ -728,13 +728,11 @@ async function withPage(btnId, fn, reader = readCurrentPage) {
   }
 }
 
-el('fcnapp-community').addEventListener('click', () => {
-  chrome.tabs.create({ url: 'https://community.fortinet.com/forticnapp-63' });
-});
-
 // ── TokenSaving: single combined badge (routing + savings) + dashboard link ─────
 // One merged element instead of two separate badges — was crowding the config bar. Runs
 // independently of autoFillFromConfig()'s url/key cache gate — the whole point is to surface the
+// Headroom/TokenSaving disabled in Ollama-only mode
+/*
 // current /config value even when a stale chrome.storage.session value is what the extension is
 // actually using (see: the Headroom docker-internal-hostname bug). Clicking the badge toggles
 // routing via serve.py's /headroom/toggle, which persists to .env and always hands back a
@@ -864,6 +862,7 @@ el('fcnapp-community').addEventListener('click', () => {
   refresh();
   setInterval(refresh, 60 * 1000);
 })();
+*/
 
 el('read-page').addEventListener('click', () => withPage('read-page', async page => {
   if (guardBusy()) return;
