@@ -676,6 +676,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             payload = {}
         gateway = (payload.get('gateway') or '').strip().lower()
+        print(f'[/gateway] Request: {gateway}', flush=True)
         if gateway not in ('bifrost', 'ollama'):
             self.send_json(400, json.dumps({'error': 'gateway must be "bifrost" or "ollama"'}).encode())
             return
@@ -683,14 +684,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         template = '.env.bifrost' if gateway == 'bifrost' else '.env.ollama'
         template_path = os.path.join(script_dir, template)
         env_path = os.path.join(script_dir, '.env')
+        print(f'[/gateway] Template: {template_path}', flush=True)
+        print(f'[/gateway] Target: {env_path}', flush=True)
         try:
             with open(template_path) as f:
                 template_content = f.read()
+            print(f'[/gateway] Read template ({len(template_content)} bytes)', flush=True)
             with open(env_path, 'w') as f:
                 f.write(template_content)
+            print(f'[/gateway] ✓ Wrote .env for {gateway}', flush=True)
             self.send_json(200, json.dumps({'status': f'switched to {gateway}', 'restart': True}).encode())
-            print(f'✓ Gateway switched to {gateway}')
         except OSError as e:
+            print(f'[/gateway] ✗ Error: {e}', flush=True)
             self.send_json(500, json.dumps({'error': f'failed to switch gateway: {e}'}).encode())
 
     def proxy_upstream(self):

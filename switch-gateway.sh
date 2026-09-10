@@ -11,7 +11,7 @@ case "$GATEWAY" in
     ;;
   ollama)
     cp "$SCRIPT_DIR/.env.ollama" "$SCRIPT_DIR/.env"
-    echo "✅ Switched to Ollama (qwen2.5-7b:instruct on http://localhost:11434)"
+    echo "✅ Switched to Ollama (qwen2.5:7b-instruct on http://localhost:11434)"
     echo "⚠️  Make sure Ollama is running: ollama serve"
     ;;
   *)
