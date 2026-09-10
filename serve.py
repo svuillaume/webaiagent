@@ -2752,7 +2752,7 @@ def _user_first_name():
         return env['USER_NAME'].split()[0]
     # macOS: id -F returns full name (e.g. "Sam Vuillaume")
     try:
-        full = subprocess.check_output(['id', '-F'], text=True, timeout=2).strip()
+        full = subprocess.check_output(['id', '-F'], text=True, timeout=2, stderr=subprocess.DEVNULL).strip()
         if full:
             return full.split()[0]
     except Exception:
