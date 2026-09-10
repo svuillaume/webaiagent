@@ -1,4 +1,5 @@
 .env
+bifrost.env
 
 .serve.pid
 serve.log

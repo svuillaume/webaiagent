@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # Copyright 2026 Fortinet, Inc.
 # Licensed under the Apache License, Version 2.0 — see LICENSE
+# Smoke test: Fortinet Code Security hook
 """
 Local proxy + static server for chatbox.html and the Chrome extension.
 
 GET  /              → chatbox.html
 GET  /config        → gateway URL, key, lw_ready flag
 POST /proxy/v1/*    → proxy to AI gateway upstream
-POST /codesec       → lacework SCA+SAST on submitted code
+POST /codesec       → lacework SCA+SAST+IaC on submitted code
 POST /sbom          → CycloneDX SBOM via lacework SCA
 POST /compliance    → compliance PDF
 GET  /compliance/list → available frameworks
@@ -40,11 +41,14 @@ def load_env():
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
                     k, _, v = line.partition('=')
-                    env[k.strip()] = v.strip()  # .env overrides env vars if present
+                    v = v.strip()
+                    if v.startswith('"') and v.endswith('"'):
+                        v = v[1:-1]
+                    env[k.strip()] = v
     return env
 
 env             = load_env()
-VIRTUAL_KEY     = env.get('BIFROST_VIRTUAL_KEY', '')
+VIRTUAL_KEY     = env.get('ANTHROPIC_AUTH_TOKEN', env.get('BIFROST_VIRTUAL_KEY', ''))
 DIRECT_UPSTREAM = env.get('ANTHROPIC_BASE_URL', 'https://your-gateway-endpoint/anthropic')
 MODEL           = env.get('ANTHROPIC_DEFAULT_MODEL', 'claude-haiku-4-5')
 LQL_QUERIES_DIR = env.get('LQL_QUERIES_DIR', '')
@@ -585,6 +589,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_headroom_toggle()
         elif self.path == '/model':
             self.serve_model_update()
+        elif self.path == '/gateway':
+            self.serve_gateway_switch()
         elif self.path == '/mcp/investigate':
             self.serve_mcp_investigate()
         else:
@@ -663,6 +669,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass  # in-memory update still applies even if the .env write fails (e.g. read-only mount)
         self.send_json(200, json.dumps({'model': MODEL}).encode())
 
+    def serve_gateway_switch(self):
+        """Switch between Bifrost and Ollama gateways by updating .env and restarting the process."""
+        try:
+            payload = json.loads(self._read_body() or '{}')
+        except json.JSONDecodeError:
+            payload = {}
+        gateway = (payload.get('gateway') or '').strip().lower()
+        if gateway not in ('bifrost', 'ollama'):
+            self.send_json(400, json.dumps({'error': 'gateway must be "bifrost" or "ollama"'}).encode())
+            return
+        script_dir = DIR
+        template = '.env.bifrost' if gateway == 'bifrost' else '.env.ollama'
+        template_path = os.path.join(script_dir, template)
+        env_path = os.path.join(script_dir, '.env')
+        try:
+            with open(template_path) as f:
+                template_content = f.read()
+            with open(env_path, 'w') as f:
+                f.write(template_content)
+            self.send_json(200, json.dumps({'status': f'switched to {gateway}', 'restart': True}).encode())
+            print(f'✓ Gateway switched to {gateway}')
+        except OSError as e:
+            self.send_json(500, json.dumps({'error': f'failed to switch gateway: {e}'}).encode())
+
     def proxy_upstream(self):
         url    = current_upstream() + self.path[len('/proxy'):]
         length = int(self.headers.get('Content-Length', 0))
@@ -724,7 +754,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 f.write(payload.get('code', ''))
 
     def serve_codesec(self):
-        """Accept JSON {files:[{filename,code}]}, run lacework SCA+SAST, return findings."""
+        """Accept JSON {files:[{filename,code}]}, run lacework SCA+SAST+IaC, return findings."""
         if not shutil.which('lacework'):
             self.send_json(503, json.dumps({'error': 'lacework CLI not found'}).encode())
             return
@@ -749,10 +779,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cmd = ['lacework', 'sca', 'scan', tmpdir,
                    '--deployment=offprem', '--noninteractive',
                    '--save-results=false', '-f', 'lw-json', '-o', out_json,
-                   '--secret=false']
+                   '--secret=true']
             if LW_PROFILE:
                 cmd += ['--profile', LW_PROFILE]
             result   = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+            # IaC misconfiguration scan (Dockerfile, Kubernetes, Terraform, ...) — separate
+            # lacework component from SCA above; `sca scan` never parses Dockerfile syntax.
+            # --disable-docker runs checkov natively instead of via `docker run`, since the
+            # webai container has no docker-in-docker access; requires `checkov` on PATH
+            # (installed in the Docker image). Skipped silently if checkov isn't available
+            # (e.g. local `python3 serve.py` dev runs without it installed).
+            misconfigs = []
+            iac_stderr = ''
+            if shutil.which('checkov'):
+                out_iac_json = os.path.join(tmpdir, 'iac.json')
+                iac_cmd = ['lacework', 'iac', 'scan', '-d', tmpdir,
+                           '--format', 'json', '--upload=false', '--disable-docker',
+                           '--save-result', out_iac_json, '--noninteractive']
+                if LW_PROFILE:
+                    iac_cmd += ['--profile', LW_PROFILE]
+                iac_result = subprocess.run(iac_cmd, capture_output=True, text=True, timeout=120)
+                if os.path.exists(out_iac_json):
+                    with open(out_iac_json) as f:
+                        iac_data = json.load(f)
+                    for finding in iac_data.get('findings', []):
+                        if finding.get('pass'):
+                            continue
+                        misconfigs.append({
+                            'type':        'iac',
+                            'id':          finding.get('ruleId', ''),
+                            'severity':    finding.get('severity', ''),
+                            'title':       finding.get('title', ''),
+                            'description': finding.get('description', ''),
+                            'file':        finding.get('filePath') or finding.get('fileName', ''),
+                            'line':        finding.get('line', 0),
+                            'fix':         '',
+                        })
+                else:
+                    iac_stderr = iac_result.stderr[-2000:]
 
             findings, weaknesses, secrets = [], [], []
             if os.path.exists(out_json):
@@ -800,12 +865,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         else:
                             weaknesses.append(entry)
 
+            sca_stderr = result.stderr[-2000:] if result.returncode not in (0, 1, 2) else ''
             body = json.dumps({
                 'filename':   filename,
                 'vulns':      findings,
                 'weaknesses': weaknesses,
                 'secrets':    secrets,
-                'stderr':     result.stderr[-2000:] if result.returncode not in (0, 1, 2) else '',
+                'misconfigs': misconfigs,
+                'stderr':     '\n'.join(s for s in (sca_stderr, iac_stderr) if s),
             }).encode()
             self.send_json(200, body)
         except subprocess.TimeoutExpired:

@@ -7,6 +7,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        | bash -s -- -d /usr/local/bin \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
+# checkov backs `lacework iac scan --disable-docker` (Dockerfile/Terraform/K8s misconfig
+# scanning for /codesec) — the container has no docker-in-docker access to run the
+# `lacework iac scan` default mode (`docker run lacework/iac-checkov:...`), so it must
+# invoke checkov as a native binary instead. Verified: without it on PATH, iac scan
+# --disable-docker fails with "exec: checkov: executable file not found in $PATH".
+RUN pip install --no-cache-dir checkov
+
 # Install lacework SCA component for linux/arm64.
 # Credentials are mounted as BuildKit secrets (never baked into the image) using
 # LW_ACCOUNT/LW_API_KEY/LW_API_SECRET directly — the same env vars serve.py already
@@ -25,11 +32,23 @@ RUN --mount=type=secret,id=lw_account \
       -s "$(cat /run/secrets/lw_api_secret)" \
     || echo "WARNING: SCA component install failed — CodeSec/SBOM will be unavailable"
 
+# Install lacework IaC component — `lacework iac scan` (Dockerfile/Terraform/K8s
+# misconfig scanning for /codesec) is a component, not a built-in subcommand; without
+# this it fails at runtime with "unknown command \"iac\" for \"lacework\"".
+RUN --mount=type=secret,id=lw_account \
+    --mount=type=secret,id=lw_api_key \
+    --mount=type=secret,id=lw_api_secret \
+    lacework component install iac --noninteractive \
+      -a "$(cat /run/secrets/lw_account)" \
+      -k "$(cat /run/secrets/lw_api_key)" \
+      -s "$(cat /run/secrets/lw_api_secret)" \
+    || echo "WARNING: IaC component install failed — misconfig scanning will be unavailable"
+
 WORKDIR /app
 COPY vendor/mcp_forticnapp/ ./vendor/mcp_forticnapp/
 RUN pip install --no-cache-dir ./vendor/mcp_forticnapp
 
-COPY serve.py chatbox.html FortiCNAPP-LQL_Reference_Guide.txt ./
+COPY serve.py chatbox.html FortiCNAPP-LQL_Reference_Guide.txt .env.bifrost .env.ollama ./
 COPY extension/ ./extension/
 
 # .env and lacework config injected at runtime via env vars or volume

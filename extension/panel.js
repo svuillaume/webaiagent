@@ -267,6 +267,36 @@ el('model').addEventListener('change', () => {
   }).catch(() => { /* offline — local chat still uses the picked model regardless */ });
 });
 
+el('gateway-toggle').addEventListener('click', async () => {
+  const btn = el('gateway-toggle');
+  btn.disabled = true;
+  const currentUrl = (await fetch(BASE_URL + '/config').then(r => r.json())).gateway_url || '';
+  const isBifrost = currentUrl.includes('bifrost') || currentUrl.includes('proxy');
+  const target = isBifrost ? 'ollama' : 'bifrost';
+  const msg = `Switching to ${target}… this may take 10-15 seconds.`;
+  setStatus(msg, 'busy');
+  btn.textContent = `🔄 ${msg}`;
+
+  try {
+    const res = await fetch(BASE_URL + '/gateway', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gateway: target }),
+    });
+    if (res.ok) {
+      setStatus(`Switched to ${target}`, 'ok');
+      setTimeout(() => { window.location.reload(); }, 500);
+    } else {
+      setStatus('Gateway switch failed', 'error');
+    }
+  } catch (err) {
+    setStatus(`Error: ${err.message}`, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔄 Bifrost/Ollama';
+  }
+});
+
 // ── Markdown renderer ─────────────────────────────────────────────────────
 // Escape before transform so model output cannot inject HTML.
 // Radar/spider chart for a small set of 0-100 risk axes (e.g. CVE risk profile).
@@ -1270,7 +1300,7 @@ async function fetchGithubRepoFiles(owner, repo, branchHint) {
 
   const candidates = (tree.tree || []).filter(item => {
     if (item.type !== 'blob') return false;
-    if (item.size > 500_000) return false; // skip files >500 KB
+    if (item.size > 2_000_000) return false; // skip files >2 MB (node_modules/vendor/dist already excluded via SKIP_DIRS)
     const parts = item.path.split('/');
     if (parts.some(p => SKIP_DIRS.has(p))) return false;
     const name = parts[parts.length - 1];
@@ -1600,12 +1630,13 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
     ...(data.secrets   || []).map(f => ({ ...f, _cat: 'Secrets' })),
     ...(data.weaknesses|| []).map(f => ({ ...f, _cat: 'SAST Weaknesses' })),
     ...(data.vulns     || []).map(f => ({ ...f, _cat: 'SCA Vulnerabilities' })),
+    ...(data.misconfigs|| []).map(f => ({ ...f, _cat: 'IaC Misconfigurations' })),
   ].sort((a, b) => severityOrder(a.severity) - severityOrder(b.severity));
 
   if (!all.length) {
     const ok = document.createElement('div');
     ok.className = 'cs-empty';
-    ok.textContent = '✓ No vulnerabilities, weaknesses, or secrets detected.';
+    ok.textContent = '✓ No vulnerabilities, weaknesses, secrets, or IaC misconfigurations detected.';
     body.appendChild(ok);
     appendResultCard('🛡', 'FortiCNAPP CodeSec', body);
     return;
@@ -1739,7 +1770,7 @@ async function runCodeSec(mode) {
     }
 
     if (mode !== 'sbom') {
-      const total = (data.vulns?.length || 0) + (data.weaknesses?.length || 0) + (data.secrets?.length || 0);
+      const total = (data.vulns?.length || 0) + (data.weaknesses?.length || 0) + (data.secrets?.length || 0) + (data.misconfigs?.length || 0);
       setStatus(total ? `${total} finding${total !== 1 ? 's' : ''}` : 'clean', total ? 'err' : 'ok');
     } else {
       setStatus('sbom ready', 'ok');
@@ -1910,13 +1941,22 @@ function openCvePanel(cveId) {
 }
 
 chrome.runtime.onMessage.addListener(msg => {
-  if (msg.type === 'CVE_SELECTED' && msg.cveId) openCvePanel(msg.cveId);
+  if (msg.type !== 'CVE_SELECTED' || !msg.cveId) return;
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => openCvePanel(msg.cveId));
+  } else {
+    openCvePanel(msg.cveId);
+  }
 });
 
 chrome.storage.session.get('pendingCve', ({ pendingCve }) => {
   if (!pendingCve) return;
   chrome.storage.session.remove('pendingCve');
-  openCvePanel(pendingCve);
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => openCvePanel(pendingCve));
+  } else {
+    openCvePanel(pendingCve);
+  }
 });
 
 // ── Selection-to-chat: "Ask AI about selection" context menu ────────────────
