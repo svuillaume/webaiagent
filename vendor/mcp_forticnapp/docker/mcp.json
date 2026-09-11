@@ -1,0 +1,26 @@
+{
+  "mcpServers": {
+    "forticnapp": {
+      "type": "local",
+      "command": ["forticnapp-mcp"],
+      "environment": {
+        "FORTICNAPP_API_BASE_URL": "${env://FORTICNAPP_API_BASE_URL}",
+        "FORTICNAPP_KEY_ID": "${env://FORTICNAPP_KEY_ID}",
+        "FORTICNAPP_API_SECRET": "${env://FORTICNAPP_API_SECRET}",
+        "ENABLE_MUTATION_TOOLS": "false"
+      },
+      "allowedTools": [
+        "forticnapp_alerts_list",
+        "forticnapp_alerts_search",
+        "forticnapp_vulnerabilities_hosts_search",
+        "forticnapp_vulnerabilities_containers_search",
+        "forticnapp_inventory_search",
+        "forticnapp_cloud_accounts_list",
+        "forticnapp_entities_machines_search",
+        "forticnapp_entities_containers_search",
+        "forticnapp_entities_k8s_pods_search",
+        "forticnapp_policies_list"
+      ]
+    }
+  }
+}

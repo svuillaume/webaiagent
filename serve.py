@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 # Copyright 2026 Fortinet, Inc.
 # Licensed under the Apache License, Version 2.0 — see LICENSE
+# Smoke test: Fortinet Code Security hook
 """
 Local proxy + static server for chatbox.html and the Chrome extension.
 
 GET  /              → chatbox.html
 GET  /config        → gateway URL, key, lw_ready flag
 POST /proxy/v1/*    → proxy to AI gateway upstream
-POST /codesec       → lacework SCA+SAST on submitted code
+POST /codesec       → lacework SCA+SAST+IaC on submitted code
 POST /sbom          → CycloneDX SBOM via lacework SCA
 POST /compliance    → compliance PDF
 GET  /compliance/list → available frameworks
@@ -15,14 +16,20 @@ GET  /lql/queries   → list .yaml files from LQL_QUERIES_DIR
 POST /lql/run       → execute LQL against FortiCNAPP
 POST /lql/cve       → CVE attack surface: hosts + containers
 POST /lql/generate  → plain-English → LQL via Claude
-GET  /headroom/stats  → lifetime token savings from a local Headroom proxy (HEADROOM_URL)
-POST /headroom/toggle → switch chat requests between direct-to-gateway and via-Headroom
+POST /lql/save      → save a generated LQL query as a new .yaml in LQL_QUERIES_DIR
+GET  /gateway/models  → list model ids Bifrost exposes (Admin menu's 'Fetch models' button)
 POST /model           → persist the extension's model picker as ANTHROPIC_DEFAULT_MODEL
 POST /mcp/investigate → Cloud Investigation: agent loop over read-only FortiCNAPP MCP tools
+POST /mcp/forensic    → FortiCNAPP Forensic (REST API): same tool-selecting agent loop, pinned to
+                        Claude Haiku-4.5, but the final report table is built mechanically from raw
+                        tool results — no GenAI writes the report text
+POST /analysis/generate → Non-streaming report text (CVE "Generate AI Analysis" button), pinned to
+                        Claude Haiku-4.5 via Bifrost, independent of the on-device model picker
 
 Usage: python3 serve.py  →  http://localhost:45321
 """
-import base64, http.server, io, json, os, re, shutil, socketserver, struct, subprocess, tempfile, threading, urllib.parse, urllib.request, urllib.error
+import base64, http.server, io, json, os, re, shutil, struct, subprocess, tempfile, threading, urllib.parse, urllib.request, urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 
 PORT      = 45321
@@ -40,45 +47,25 @@ def load_env():
                 line = line.strip()
                 if line and not line.startswith('#') and '=' in line:
                     k, _, v = line.partition('=')
-                    env[k.strip()] = v.strip()  # .env overrides env vars if present
+                    v = v.strip()
+                    if v.startswith('"') and v.endswith('"'):
+                        v = v[1:-1]
+                    env[k.strip()] = v
     return env
 
 env             = load_env()
-VIRTUAL_KEY     = env.get('BIFROST_VIRTUAL_KEY', '')
+VIRTUAL_KEY     = env.get('ANTHROPIC_AUTH_TOKEN', env.get('BIFROST_VIRTUAL_KEY', ''))
 DIRECT_UPSTREAM = env.get('ANTHROPIC_BASE_URL', 'https://your-gateway-endpoint/anthropic')
 MODEL           = env.get('ANTHROPIC_DEFAULT_MODEL', 'claude-haiku-4-5')
 LQL_QUERIES_DIR = env.get('LQL_QUERIES_DIR', '')
-HEADROOM_URL    = env.get('HEADROOM_URL', '').rstrip('/')  # optional local Headroom proxy, e.g. http://host.docker.internal:8789
-# Browser-facing address for the dashboard link and for the extension's own direct fetch — differs
-# from HEADROOM_URL when serve.py runs in Docker (host.docker.internal resolves inside the
-# container, not in the host's Chrome browser, which is what caused the "Failed to fetch" bug).
-HEADROOM_DASHBOARD_URL = env.get('HEADROOM_DASHBOARD_URL', '').rstrip('/') or HEADROOM_URL
-
-# ── Headroom routing toggle ──────────────────────────────────────────────────
-# In-memory switch (source of truth while the process runs) + persisted to .env so it survives
-# a restart. Never overwrites ANTHROPIC_BASE_URL itself — DIRECT_UPSTREAM always stays the real
-# gateway, so toggling back to "direct" can never lose it.
-_state_lock = threading.Lock()
-_state = {'headroom_enabled': env.get('HEADROOM_ENABLED', '0').strip().lower() in ('1', 'true', 'yes', 'on')}
-
-def _headroom_enabled() -> bool:
-    with _state_lock:
-        return _state['headroom_enabled'] and bool(HEADROOM_URL)
 
 def current_upstream() -> str:
     """Server-side outbound target — used by proxy_upstream() (chatbox.html's path)."""
-    return HEADROOM_URL if _headroom_enabled() else DIRECT_UPSTREAM
+    return DIRECT_UPSTREAM
 
 def current_browser_gateway_url() -> str:
     """Browser-reachable target — used for /config's gateway_url (the extension fetches this
-    directly from the browser). When routing through Headroom this points at serve.py's own
-    /proxy passthrough rather than Headroom directly: Headroom's CORS allowlist rejects
-    chrome-extension:// origins and the x-api-key/anthropic-version headers outright (400
-    "Disallowed CORS origin, headers"), so a direct browser→Headroom fetch always fails —
-    going through /proxy sidesteps CORS entirely since it's a server-side call, same as
-    chatbox.html already does successfully."""
-    if _headroom_enabled():
-        return f'http://localhost:{PORT}/proxy'
+    directly from the browser)."""
     return DIRECT_UPSTREAM
 
 def _write_env_var(key: str, value: str) -> None:
@@ -291,6 +278,7 @@ RESPONSE_CACHE_TTL_SECONDS = 3600  # 1 hour — how long a cached LQL/investigat
 
 _lql_cache: dict = {}
 _investigate_cache: dict = {}
+_forensic_cache: dict = {}
 _fg_cache: dict = {'items': [], 'ts': 0.0}
 
 def _fg_outbreaks_cached():
@@ -363,8 +351,18 @@ def _fetch_cve_intel(cve: str) -> dict:
         except Exception:
             return None
 
-    # EPSS
-    epss_data = _get_json(f'https://api.first.org/data/v1/epss?cve={cve}')
+    # EPSS / CISA KEV / NVD are three independent external calls (the KEV feed alone is a
+    # multi-MB JSON download with a 12s timeout) — fetch all three concurrently instead of
+    # back-to-back, since that's most of what made CVE lookups feel hung.
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        epss_future = pool.submit(_get_json, f'https://api.first.org/data/v1/epss?cve={cve}')
+        kev_future  = pool.submit(_get_json, 'https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', None, 12)
+        nvd_future  = pool.submit(_get_json, f'https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}',
+                                   {'User-Agent': 'FortiAIScout/1.0', 'Accept': 'application/json'}, 10)
+        epss_data = epss_future.result()
+        kev_data  = kev_future.result()
+        nvd_data  = nvd_future.result()
+
     if epss_data and epss_data.get('data'):
         e = epss_data['data'][0]
         result['epss'] = {
@@ -376,7 +374,6 @@ def _fetch_cve_intel(cve: str) -> dict:
         result['epss'] = None
 
     # CISA KEV
-    kev_data = _get_json('https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json', timeout=12)
     if kev_data:
         kev_entry = next((v for v in kev_data.get('vulnerabilities', []) if v.get('cveID') == cve), None)
         if kev_entry:
@@ -394,11 +391,6 @@ def _fetch_cve_intel(cve: str) -> dict:
         result['kev'] = None
 
     # NVD CVSS
-    nvd_data = _get_json(
-        f'https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve}',
-        headers={'User-Agent': 'FortiCNAPP AI Agent/1.0', 'Accept': 'application/json'},
-        timeout=10,
-    )
     if nvd_data and nvd_data.get('vulnerabilities'):
         vuln = nvd_data['vulnerabilities'][0].get('cve', {})
         metrics = vuln.get('metrics', {})
@@ -561,8 +553,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_outbreak_detail()
         elif self.path.startswith('/fortiguard/cve-intel'):
             self.serve_cve_intel()
-        elif self.path == '/headroom/stats':
-            self.serve_headroom_stats()
+        elif self.path == '/mcp/tools':
+            self.serve_mcp_tools()
+        elif self.path == '/gateway/models':
+            self.serve_gateway_models()
         else:
             self.send_error(404)
 
@@ -579,14 +573,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.serve_lql_cve()
         elif self.path == '/lql/generate':
             self.serve_lql_generate()
+        elif self.path == '/lql/save':
+            self.serve_lql_save()
         elif self.path.startswith('/proxy/'):
             self.proxy_upstream()
-        elif self.path == '/headroom/toggle':
-            self.serve_headroom_toggle()
         elif self.path == '/model':
             self.serve_model_update()
         elif self.path == '/mcp/investigate':
             self.serve_mcp_investigate()
+        elif self.path == '/mcp/forensic':
+            self.serve_mcp_forensic()
+        elif self.path == '/mcp/call':
+            self.serve_mcp_call()
+        elif self.path == '/analysis/generate':
+            self.serve_analysis_generate()
         else:
             self.send_error(404)
 
@@ -616,33 +616,33 @@ class Handler(http.server.BaseHTTPRequestHandler):
             'lw_ready':      LW_READY,
             'lw_cli':        LW_AVAILABLE,
             'user_name':     _user_first_name(),
-            'via_headroom':  _headroom_enabled(),
-            'headroom_configured': bool(HEADROOM_URL),
+            'lw_account':    account,
         }).encode()
         self.send_json(200, body)
 
-    def serve_headroom_toggle(self):
-        try:
-            payload = json.loads(self._read_body() or '{}')
-        except json.JSONDecodeError:
-            payload = {}
-        enable = payload.get('enable')
-        if not isinstance(enable, bool):
-            self.send_json(400, json.dumps({'error': 'body must be {"enable": true|false}'}).encode())
+    def serve_gateway_models(self):
+        """List every model Bifrost's /v1/models exposes, for the Admin menu's 'Fetch models'
+        button — lets the user pick from what the gateway actually has instead of guessing a
+        model id. Bifrost normalizes every provider (Claude/GPT/DeepSeek/etc.) behind the same
+        /v1/messages endpoint (x-api-key auth) — there's no separate URL to configure per
+        provider, just a different `model` string, so this only ever needs DIRECT_UPSTREAM."""
+        if not DIRECT_UPSTREAM or not VIRTUAL_KEY:
+            self.send_json(503, json.dumps({'error': 'Gateway URL or virtual key not configured'}).encode())
             return
-        if enable and not HEADROOM_URL:
-            self.send_json(400, json.dumps({'error': 'HEADROOM_URL is not set in .env'}).encode())
-            return
-        with _state_lock:
-            _state['headroom_enabled'] = enable
         try:
-            _write_env_var('HEADROOM_ENABLED', '1' if enable else '0')
-        except OSError:
-            pass  # in-memory toggle still applies even if the .env write fails (e.g. read-only mount)
-        self.send_json(200, json.dumps({
-            'via_headroom': _headroom_enabled(),
-            'gateway_url':  current_browser_gateway_url(),
-        }).encode())
+            req = urllib.request.Request(
+                current_upstream().rstrip('/') + '/v1/models',
+                headers={'x-api-key': VIRTUAL_KEY, 'anthropic-version': '2023-06-01'})
+            resp = urllib.request.urlopen(req, timeout=15)
+            data = json.loads(resp.read())
+            models = sorted(m['id'] for m in data.get('data', []) if m.get('id'))
+        except urllib.error.HTTPError as e:
+            self.send_json(e.code, json.dumps({'error': e.read().decode()[:400]}).encode())
+            return
+        except Exception as e:
+            self.send_json(502, json.dumps({'error': str(e)}).encode())
+            return
+        self.send_json(200, json.dumps({'models': models}).encode())
 
     def serve_model_update(self):
         """Persist the model picked in the extension's dropdown as ANTHROPIC_DEFAULT_MODEL,
@@ -662,6 +662,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except OSError:
             pass  # in-memory update still applies even if the .env write fails (e.g. read-only mount)
         self.send_json(200, json.dumps({'model': MODEL}).encode())
+
+    def serve_analysis_generate(self):
+        """Server-side, non-streaming report-text generation for the CVE/Unified Attack Threat
+        Surface 'Generate AI Analysis' button. Pinned to Claude Haiku-4.5 via Bifrost — same
+        model/upstream as /mcp/investigate and /mcp/forensic — instead of the on-device WebLLM
+        engine panel.js otherwise uses for chat, so this report reads identically regardless of
+        which on-device model the user has picked in the Admin menu. Body: {"prompt": "..."}."""
+        try:
+            payload = json.loads(self._read_body())
+        except json.JSONDecodeError:
+            self.send_json(400, json.dumps({'error': 'Expected JSON {prompt}'}).encode())
+            return
+        prompt = (payload.get('prompt') or '').strip()
+        if not prompt:
+            self.send_json(400, json.dumps({'error': 'prompt is required'}).encode())
+            return
+        if not DIRECT_UPSTREAM or not VIRTUAL_KEY:
+            self.send_json(503, json.dumps({'error': 'Gateway URL or virtual key not configured'}).encode())
+            return
+
+        body = json.dumps({
+            'model': 'claude-haiku-4-5',
+            'max_tokens': 16000,
+            'temperature': 0.2,
+            'messages': [{'role': 'user', 'content': prompt}],
+        }).encode()
+        req = urllib.request.Request(
+            current_upstream().rstrip('/') + '/v1/messages', data=body, method='POST',
+            headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY,
+                      'anthropic-version': '2023-06-01'})
+        try:
+            resp = urllib.request.urlopen(req, timeout=120)
+            resp_data = json.loads(resp.read())
+            text = ''.join(b.get('text', '') for b in resp_data.get('content', []) if b.get('type') == 'text')
+            self.send_json(200, json.dumps({'text': text}).encode())
+        except urllib.error.HTTPError as e:
+            err_body = e.read()
+            try:
+                msg = json.loads(err_body).get('error', {}).get('message', err_body.decode()[:400])
+            except Exception:
+                msg = err_body.decode()[:400]
+            self.send_json(502, json.dumps({'error': msg}).encode())
+        except Exception as e:
+            self.send_json(502, json.dumps({'error': str(e)}).encode())
 
     def proxy_upstream(self):
         url    = current_upstream() + self.path[len('/proxy'):]
@@ -724,7 +768,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 f.write(payload.get('code', ''))
 
     def serve_codesec(self):
-        """Accept JSON {files:[{filename,code}]}, run lacework SCA+SAST, return findings."""
+        """Accept JSON {files:[{filename,code}]}, run lacework SCA+SAST+IaC, return findings."""
         if not shutil.which('lacework'):
             self.send_json(503, json.dumps({'error': 'lacework CLI not found'}).encode())
             return
@@ -749,10 +793,45 @@ class Handler(http.server.BaseHTTPRequestHandler):
             cmd = ['lacework', 'sca', 'scan', tmpdir,
                    '--deployment=offprem', '--noninteractive',
                    '--save-results=false', '-f', 'lw-json', '-o', out_json,
-                   '--secret=false']
+                   '--secret=true']
             if LW_PROFILE:
                 cmd += ['--profile', LW_PROFILE]
             result   = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+            # IaC misconfiguration scan (Dockerfile, Kubernetes, Terraform, ...) — separate
+            # lacework component from SCA above; `sca scan` never parses Dockerfile syntax.
+            # --disable-docker runs checkov natively instead of via `docker run`, since the
+            # webai container has no docker-in-docker access; requires `checkov` on PATH
+            # (installed in the Docker image). Skipped silently if checkov isn't available
+            # (e.g. local `python3 serve.py` dev runs without it installed).
+            misconfigs = []
+            iac_stderr = ''
+            if shutil.which('checkov'):
+                out_iac_json = os.path.join(tmpdir, 'iac.json')
+                iac_cmd = ['lacework', 'iac', 'scan', '-d', tmpdir,
+                           '--format', 'json', '--upload=false', '--disable-docker',
+                           '--save-result', out_iac_json, '--noninteractive']
+                if LW_PROFILE:
+                    iac_cmd += ['--profile', LW_PROFILE]
+                iac_result = subprocess.run(iac_cmd, capture_output=True, text=True, timeout=120)
+                if os.path.exists(out_iac_json):
+                    with open(out_iac_json) as f:
+                        iac_data = json.load(f)
+                    for finding in iac_data.get('findings', []):
+                        if finding.get('pass'):
+                            continue
+                        misconfigs.append({
+                            'type':        'iac',
+                            'id':          finding.get('ruleId', ''),
+                            'severity':    finding.get('severity', ''),
+                            'title':       finding.get('title', ''),
+                            'description': finding.get('description', ''),
+                            'file':        finding.get('filePath') or finding.get('fileName', ''),
+                            'line':        finding.get('line', 0),
+                            'fix':         '',
+                        })
+                else:
+                    iac_stderr = iac_result.stderr[-2000:]
 
             findings, weaknesses, secrets = [], [], []
             if os.path.exists(out_json):
@@ -800,12 +879,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         else:
                             weaknesses.append(entry)
 
+            sca_stderr = result.stderr[-2000:] if result.returncode not in (0, 1, 2) else ''
             body = json.dumps({
                 'filename':   filename,
                 'vulns':      findings,
                 'weaknesses': weaknesses,
                 'secrets':    secrets,
-                'stderr':     result.stderr[-2000:] if result.returncode not in (0, 1, 2) else '',
+                'misconfigs': misconfigs,
+                'stderr':     '\n'.join(s for s in (sca_stderr, iac_stderr) if s),
             }).encode()
             self.send_json(200, body)
         except subprocess.TimeoutExpired:
@@ -1578,6 +1659,48 @@ class Handler(http.server.BaseHTTPRequestHandler):
             queries.append({'id': query_id, 'filename': fname, 'queryText': query_text})
         self.send_json(200, json.dumps({'queries': queries}).encode())
 
+    def serve_lql_save(self):
+        """Save a generated LQL query as a new .yaml file in LQL_QUERIES_DIR, so it
+        shows up in the LQL tab's saved-query dropdown alongside the pre-existing ones."""
+        try:
+            payload = json.loads(self._read_body())
+        except json.JSONDecodeError:
+            self.send_error(400, 'Expected JSON {name, description, queryText}')
+            return
+
+        name       = (payload.get('name') or '').strip()
+        description = (payload.get('description') or '').strip()
+        query_text  = (payload.get('queryText') or '').strip()
+        if not name or not query_text:
+            self.send_json(400, json.dumps({'error': 'name and queryText are required'}).encode())
+            return
+        if not LQL_QUERIES_DIR or not os.path.isdir(LQL_QUERIES_DIR):
+            self.send_json(503, json.dumps({'error': 'LQL_QUERIES_DIR is not configured or not mounted'}).encode())
+            return
+
+        query_id = re.sub(r'[^A-Za-z0-9_-]+', '_', name).strip('_') or 'Custom_Query'
+        fname = f'{query_id}.yaml'
+        path = os.path.join(LQL_QUERIES_DIR, fname)
+        if os.path.exists(path):
+            self.send_json(409, json.dumps({'error': f'A saved query named "{query_id}" already exists'}).encode())
+            return
+
+        indented = '\n'.join('  ' + line if line else '' for line in query_text.splitlines())
+        yaml_lines = [f'queryId: {query_id}']
+        if description:
+            indented_desc = '\n'.join('  ' + line if line else '' for line in description.splitlines())
+            yaml_lines.append('objective: |')
+            yaml_lines.append(indented_desc)
+        yaml_lines.append('queryText: |-')
+        yaml_lines.append(indented)
+        try:
+            with open(path, 'w') as f:
+                f.write('\n'.join(yaml_lines) + '\n')
+        except OSError as e:
+            self.send_json(500, json.dumps({'error': f'Could not write query file: {e}'}).encode())
+            return
+        self.send_json(200, json.dumps({'id': query_id, 'filename': fname}).encode())
+
     def serve_fortiguard_outbreaks(self):
         self.send_json(200, json.dumps({'items': _fg_outbreaks_cached()}).encode())
 
@@ -1611,35 +1734,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
         result = _fetch_cve_intel(cve)
         self.send_json(200, json.dumps(result).encode())
 
-    def serve_headroom_stats(self):
-        """Proxy Headroom's lifetime savings — keeps the extension's CSP from needing
-        a direct route to the Headroom proxy, same pattern as the FortiGuard routes above."""
-        if not HEADROOM_URL:
-            self.send_json(200, json.dumps({'available': False}).encode())
-            return
-        try:
-            req = urllib.request.Request(f'{HEADROOM_URL}/stats-history',
-                                          headers={'User-Agent': 'FortiCNAPP AI Agent/1.0'})
-            with urllib.request.urlopen(req, timeout=4) as r:
-                data = json.loads(r.read())
-            lifetime      = data.get('lifetime', {})
-            tokens_saved  = lifetime.get('tokens_saved', 0)
-            # total_input_tokens is what was actually SENT (post-compression), so the original
-            # pre-compression total is tokens_saved + total_input_tokens.
-            tokens_after  = lifetime.get('total_input_tokens', 0)
-            tokens_before = tokens_saved + tokens_after
-            savings_pct   = round((tokens_saved / tokens_before) * 100, 1) if tokens_before else 0.0
-            self.send_json(200, json.dumps({
-                'available':      True,
-                'dashboard_url':  f'{HEADROOM_DASHBOARD_URL}/dashboard',
-                'tokens_saved':   tokens_saved,
-                'requests':       lifetime.get('requests', 0),
-                'savings_percent': savings_pct,
-            }).encode())
-        except Exception:
-            self.send_json(200, json.dumps({'available': False}).encode())
-
     def serve_mcp_investigate(self):
+        self._run_mcp_agent_loop(cache=_investigate_cache, model=None, temperature=None, top_k=None)
+
+    def serve_mcp_forensic(self):
+        """Same tool-selecting agent loop as /mcp/investigate, pinned to Claude Haiku-4.5
+        with a low temperature and top_k=10 for fast, deterministic tool picks —
+        independent of ANTHROPIC_DEFAULT_MODEL, so switching the global model picker
+        (Admin → LLM Model, which only affects /lql/generate) never affects this tab.
+        Unlike /mcp/investigate, the final report is NOT model-written: mechanical_report=True
+        skips the narrative-writing GenAI call entirely — once tool calls are done (or the
+        budget is spent), the raw rows collected from every tool call are emitted as-is
+        (a 'final_raw' event, one group per tool, grouped by _group_collected_rows) for
+        panel.js to render with renderLqlTable() — the same raw-data-table component the
+        LQL/Assisted Investigation tabs use — so nothing in the output is GenAI-generated
+        or templated prose."""
+        self._run_mcp_agent_loop(cache=_forensic_cache, model='claude-haiku-4-5', temperature=0.1, top_k=10,
+                                  mechanical_report=True)
+
+    def _run_mcp_agent_loop(self, cache, model, temperature, top_k, mechanical_report=False):
         try:
             payload = json.loads(self._read_body())
         except json.JSONDecodeError:
@@ -1650,11 +1763,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_json(400, json.dumps({'error': 'prompt is required'}).encode())
             return
 
+        call_model = model or MODEL or 'claude-haiku-4-5'
+
         # Cache lookup — normalize to lowercase, collapse whitespace, same as
         # /lql/generate. A fresh cache hit replays the exact recorded event stream
         # (tool_call/tool_result/final) instead of re-running the agent loop.
         cache_key = ' '.join(prompt.lower().split())
-        cached = _investigate_cache.get(cache_key)
+        cached = cache.get(cache_key)
         if cached and datetime.now(timezone.utc).timestamp() - cached['cached_at'] < RESPONSE_CACHE_TTL_SECONDS:
             self.send_response(200)
             self.send_header('Content-Type', 'application/x-ndjson')
@@ -1680,21 +1795,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.wfile.flush()
 
         def cache_success():
-            _investigate_cache[cache_key] = {
+            cache[cache_key] = {
                 'events':    recorded_events,
                 'cached_at': datetime.now(timezone.utc).timestamp(),
             }
 
-        # Cloud Investigation is a multi-turn native tool-calling loop (see `tools=` in
-        # _call_gateway below) — it depends on the model returning proper Anthropic
-        # tool_use content blocks on every turn. Non-Claude models routed through this
-        # gateway (confirmed with deepseek-v4-pro) can instead leak their own native
-        # tool-call markup as literal text, which then gets shown as if it were the
-        # final answer — a garbled, irrelevant-looking report with no indication
-        # anything went wrong. Fail clearly up front instead.
-        if not MODEL.startswith('claude'):
+        # This is a multi-turn native tool-calling loop (see `tools=` in _call_gateway
+        # below) — it depends on the model returning proper Anthropic tool_use content
+        # blocks on every turn. Non-Claude models routed through this gateway (confirmed
+        # with deepseek-v4-pro) can instead leak their own native tool-call markup as
+        # literal text, which then gets shown as if it were the final answer — a
+        # garbled, irrelevant-looking report with no indication anything went wrong.
+        # Fail clearly up front instead. (When `model` is pinned, e.g. by
+        # /mcp/forensic, it's always Claude, so this only ever gates /mcp/investigate.)
+        if not call_model.startswith('claude'):
             emit({'type': 'final', 'text':
-                  f'Cloud Investigation requires a Claude model — "{MODEL}" doesn\'t reliably '
+                  f'This feature requires a Claude model — "{call_model}" doesn\'t reliably '
                   'support the multi-turn tool-calling this feature depends on. Switch to a '
                   'Claude model (Admin → LLM Model) and try again.'})
             return
@@ -1702,7 +1818,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         try:
             _mcp_ensure_started()
         except (RuntimeError, TimeoutError) as e:
-            emit({'type': 'final', 'text': f'Cloud Investigation is unavailable: {e}'})
+            emit({'type': 'final', 'text': f'Investigation is unavailable: {e}'})
             return
 
         if not DIRECT_UPSTREAM or not VIRTUAL_KEY:
@@ -1710,7 +1826,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
 
         inv_now   = datetime.now(timezone.utc)
-        inv_start = (inv_now - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        inv_start = (inv_now - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
         inv_end   = inv_now.strftime('%Y-%m-%dT%H:%M:%SZ')
         system_prompt = (
             "You are a read-only FortiCNAPP cloud security investigator. Use the "
@@ -1724,19 +1840,65 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "You have a strict budget of 6 tool calls total, so favor a single "
             "well-targeted, filtered query over broad unfiltered ones. For any tool "
             f"that takes a startTime/endTime, default to startTime={inv_start} and "
-            f"endTime={inv_end} (the last 30 days) unless the objective explicitly "
-            "asks for a different window — this stays inside every known cap "
-            "(endpoints commonly enforce 7 or 90 days) so you don't burn a retry "
-            "discovering the limit the hard way.\n\n"
-            "CRITICAL — do not guess filter values cold, and do not trust an empty "
-            "result: FortiCNAPP's own field values (e.g. resourceType) use ITS "
-            "internal taxonomy — lowercase 'service:resource' pairs like "
-            "'ec2:instance' or 's3:bucket' — NOT AWS CloudFormation type strings "
+            f"endTime={inv_end} (the last 7 days) unless the objective explicitly asks "
+            "for a different window. 7 days is the tightest cap enforced across these "
+            "endpoints (e.g. Events/search rejects any span over 7 days outright) — only "
+            "widen the window if the objective needs longer history AND you've confirmed "
+            "via a tool's own error message that a wider span is actually accepted; never "
+            "widen speculatively, since that just burns a retry discovering the limit the "
+            "hard way.\n\n"
+            "CRITICAL — do not guess filter FIELD NAMES OR VALUES cold, and do not trust "
+            "an empty result: FortiCNAPP's field names don't always match the obvious "
+            "guess — e.g. Inventory search's region filter field is `resourceRegion`, "
+            "NOT `region` or `resourceType.region`. Likewise, its field VALUES (e.g. "
+            "resourceType) use ITS internal taxonomy — lowercase 'service:resource' pairs "
+            "like 'ec2:instance' or 's3:bucket' — NOT AWS CloudFormation type strings "
             "(AWS::EC2::Instance) and NOT Config-style names (AWS_EC2_INSTANCE). If "
             "you don't already know the exact value, run ONE unfiltered or "
             "lightly-filtered call first (e.g. by csp/dataset alone) to observe real "
             "field values in the actual response, THEN filter using a value you "
-            "directly observed. An empty result (0 rows, 204 No Content) after "
+            "directly observed.\n\n"
+            "CRITICAL — Inventory search request shape: the body only accepts "
+            "`csp`, `filters`, `timeFilter`, and `returns` (plus a deprecated, "
+            "unrelated `dataset` field that ONLY accepts 'AwsCompliance'/'GcpCompliance' "
+            "— never use it for a resource type like 's3:bucket' or 'ec2:instance', "
+            "that silently gets rejected/ignored and returns 0 rows with no error). "
+            "To filter by resource type, put it INSIDE `filters` as "
+            "{\"field\": \"resourceType\", \"expression\": \"eq\", \"value\": \"s3:bucket\"} "
+            "— there is no top-level `resourceType` or `dataset` shortcut for this. "
+            "The ONLY valid `returns` field names for Inventory search are: "
+            "`resourceId`, `resourceRegion`, `resourceType`, `csp`, `cloudDetails`, "
+            "`resourceConfig`, `resourceTags`, `service`, `startTime`, `endTime`, "
+            "`status`, `urn`, `apiKey` — there is NO `resourceName` field (a common "
+            "wrong guess). Including even one invalid field name in `returns` makes "
+            "the ENTIRE call return null/no data with no error — not just that field "
+            "being dropped — so double-check every entry in `returns` against this "
+            "exact list before calling.\n\n"
+            "CRITICAL — a `filters` entry's `expression` MUST be one of: `eq`, `ne`, "
+            "`between`, `in`, `not_in`, `like`, `ilike`, `not_like`, `not_ilike`, `rlike`, "
+            "`not_rlike` — there is NO `neq` or `not_eq` (a common wrong guess for "
+            "'not equal'; the correct value is `ne`). An invalid `expression` gets "
+            "rejected outright (\"Invalid format in request body\"), and if you then give "
+            "up on that filter and retry the SAME call with it simply removed, you get an "
+            "UNFILTERED result that silently includes exactly the rows you meant to "
+            "exclude — never drop a filter after an error; fix the operator name and "
+            "retry the same filter.\n\n"
+            "CRITICAL — Alerts span THREE categories, not one: `Policy` (rule/config-"
+            "violation alerts — what the FortiCNAPP UI labels \"Risk Alerts\"), "
+            "`Anomaly` (behavioral detections), and `Composite` (multi-signal "
+            "correlated detections that FortiCNAPP's UI labels \"Threat Alerts\" — "
+            "these represent an actual attack chain, not a single rule firing, and "
+            "are usually the most important ones to surface). When an objective asks "
+            "broadly for \"alerts\", \"threats\", \"active threats\", or \"security "
+            "incidents\" (as opposed to a specific alert type), do NOT filter "
+            "`Alerts/search` by `category` at all — an unfiltered or severity-only "
+            "filtered call returns all three categories together. If you DO filter "
+            "by `category`, remember `Composite` is a separate value from `Policy`/"
+            "`Anomaly` and must be included explicitly (e.g. run it separately, or "
+            "state clearly that Composite/Threat alerts were excluded) — never assume "
+            "a `Policy`-filtered or severity-only result already covers Composite "
+            "alerts, since it does not.\n\n"
+            "An empty result (0 rows, 204 No Content) after "
             "applying a guessed filter is NOT evidence the resource doesn't exist — "
             "it commonly means the filter value itself didn't match anything. Never "
             "conclude 'not found' or 'zero results' from a filtered query whose "
@@ -1754,17 +1916,28 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "them after the fact. Every count and every row in your final table must "
             "trace back to actual tool_result data, not arithmetic or deduplication "
             "you performed in your head.\n\n"
-            "OUTPUT FORMAT: when the objective concerns a set of resources (instances, "
-            "buckets, accounts, findings, etc.), your final answer MUST include one "
-            "single markdown table listing EVERY matching resource individually — one "
-            "row per resource, its ID as the first column (e.g. instance ID, resource "
-            "ID), plus whatever other columns are relevant (account, region, type, "
-            "status). Never split the same resource type across several small "
-            "per-account or per-region tables, and never fall back to prose/bullets "
-            "for some resources while tabulating others — one table, every matching "
-            "resource, no omissions. If 55 resources match, the table has 55 rows. A "
-            "short summary (counts, notable patterns) may follow the table, but the "
-            "table itself must be complete over everything the tool calls returned."
+            # Same Finding/Why/Remediate table, same rule wording, as panel.js's
+            # INCIDENT_REPORT_TEMPLATE (used for CVE and LQL AI analysis) — keep both in
+            # sync if either changes, so every report in the app reads the same way
+            # regardless of which path (server-side agent loop vs. on-device call) produced it.
+            "\n\nOUTPUT FORMAT — use EXACTLY this format for your final answer, a single "
+            "Markdown table, nothing else (no title, no status/severity line, no separate "
+            "remediation section, no other headings or sections before or after the table). "
+            "Never invent facts, dates, counts, or context not present in the tool results.\n\n"
+            "| Finding | What It Means / Why It Matters | Next Steps to Remediate |\n"
+            "|---|---|---|\n\n"
+            "Rules:\n"
+            "- One row per matching resource — real names/IDs from the tool results as the "
+            "Finding, never a placeholder.\n"
+            "- Include EVERY matching resource as its own row — never sample, truncate, or "
+            "split into multiple tables. If 55 resources match, the table has 55 rows.\n"
+            "- \"What It Means / Why It Matters\": one plain-language sentence — what the "
+            "resource/finding is and why it matters (severity/exposure context if applicable). "
+            "For pure inventory with no actual risk, a short factual description is enough.\n"
+            "- \"Next Steps to Remediate\": one concrete action. Use an exact command where "
+            "remediation applies (real resource names/IDs, never placeholders). Use \"None — "
+            "informational only\" when there is nothing to remediate (e.g. plain "
+            "inventory/listing objectives)."
         )
         messages = [{'role': 'user', 'content': prompt}]
 
@@ -1773,11 +1946,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
             response dict, or None after emitting a 'final' error event itself
             (caller should just `return` when this returns None)."""
             body = {
-                'model': MODEL or 'claude-haiku-4-5',
+                'model': call_model,
                 'max_tokens': 4096,
                 'system': system_prompt,
                 'messages': messages,
             }
+            if temperature is not None:
+                body['temperature'] = temperature
+            if top_k is not None:
+                body['top_k'] = top_k
             if include_tools:
                 body['tools'] = _mcp_state['tools']
             req = urllib.request.Request(
@@ -1799,6 +1976,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 emit({'type': 'final', 'text': f'Investigation failed: {e}'})
                 return None
 
+        # Only populated/used when mechanical_report=True (/mcp/forensic) — every row
+        # returned by every successful tool call, tagged with the tool that produced it,
+        # so the final table can be built straight from real data with no GenAI writing
+        # its text (see _build_mechanical_report below).
+        collected_rows = []
+
         MAX_ITERATIONS = 6
         for _ in range(MAX_ITERATIONS):
             resp_data = _call_gateway(include_tools=True)
@@ -1809,8 +1992,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             tool_use_blocks = [b for b in content_blocks if b.get('type') == 'tool_use']
 
             if not tool_use_blocks:
-                text = ''.join(b.get('text', '') for b in content_blocks if b.get('type') == 'text')
-                emit({'type': 'final', 'text': text or 'No answer was generated.'})
+                if mechanical_report:
+                    emit({'type': 'final_raw', 'groups': _group_collected_rows(collected_rows)})
+                else:
+                    text = ''.join(b.get('text', '') for b in content_blocks if b.get('type') == 'text')
+                    emit({'type': 'final', 'text': text or 'No answer was generated.'})
                 cache_success()
                 return
 
@@ -1852,6 +2038,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         total = pagination.get('total_rows')
                         summary = (f'{count} of {total} result(s)' if total and str(total) != count
                                    else f'{count} result(s)')
+                        if mechanical_report:
+                            if items is not None:
+                                collected_rows.extend((block['name'], item) for item in items)
+                            elif rows is not None:
+                                collected_rows.append((block['name'], rows))
                     else:
                         # FortiCNAPP's actual reason (e.g. "startTime/endTime span too
                         # wide") usually lands in `data`, not the generic wrapper
@@ -1873,10 +2064,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 })
             messages.append({'role': 'user', 'content': tool_results})
 
-        # Iteration cap reached without the model naturally stopping. `messages` still
-        # holds every tool result gathered so far (successes and failures alike) — force
-        # one more tools-less call asking the model to synthesize its best answer from
-        # that, rather than discarding everything and reporting nothing.
+        # Iteration cap reached without the model naturally stopping.
+        if mechanical_report:
+            # `collected_rows` already holds every row gathered across all iterations —
+            # emit it directly, no extra model call needed.
+            emit({'type': 'final_raw', 'groups': _group_collected_rows(collected_rows)})
+            cache_success()
+            return
+
+        # `messages` still holds every tool result gathered so far (successes and
+        # failures alike) — force one more tools-less call asking the model to
+        # synthesize its best answer from that, rather than discarding everything and
+        # reporting nothing.
         messages.append({
             'role': 'user',
             'content': (
@@ -1892,6 +2091,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
         text = ''.join(b.get('text', '') for b in resp_data.get('content', []) if b.get('type') == 'text')
         emit({'type': 'final', 'text': text or f'Investigation exceeded the {MAX_ITERATIONS}-step limit and no answer could be synthesized — try narrowing the objective.'})
         cache_success()
+
+    def serve_mcp_tools(self):
+        """List the MCP server's tool schemas, OpenAI-function-calling shaped, for a
+        client-side (on-device model) tool-calling loop — unlike /mcp/investigate,
+        this endpoint runs no agent loop itself and has no Claude-only gate; any
+        model capable of OpenAI-style function calling can drive it."""
+        try:
+            _mcp_ensure_started()
+        except (RuntimeError, TimeoutError) as e:
+            self.send_json(503, json.dumps({'error': str(e)}).encode())
+            return
+        tools = [
+            {
+                'type': 'function',
+                'function': {
+                    'name': t['name'],
+                    'description': t.get('description', ''),
+                    'parameters': t['input_schema'],
+                },
+            }
+            for t in _mcp_state['tools']
+        ]
+        self.send_json(200, json.dumps({'tools': tools}).encode())
+
+    def serve_mcp_call(self):
+        """Invoke a single named MCP tool and return its result — a dumb passthrough
+        to _mcp_call_tool(), with no agent loop of its own. The caller (a client-side
+        tool-calling loop in panel.js) owns the multi-turn logic."""
+        try:
+            payload = json.loads(self._read_body())
+        except json.JSONDecodeError:
+            self.send_error(400, 'Expected JSON {name, arguments}')
+            return
+        name = (payload.get('name') or '').strip()
+        if not name:
+            self.send_json(400, json.dumps({'error': 'name is required'}).encode())
+            return
+        try:
+            _mcp_ensure_started()
+            result = _mcp_call_tool(name, payload.get('arguments') or {})
+        except Exception as e:
+            self.send_json(200, json.dumps({'success': False, 'error': str(e)}).encode())
+            return
+        self.send_json(200, json.dumps(result).encode())
 
     def serve_lql_generate(self):
         try:
@@ -2285,7 +2528,8 @@ config, etc.) where LQL alone already gives complete coverage.
 
 ━━ OUTPUT FORMAT ━━
 Respond with ONLY a valid JSON object — no markdown, no code fences, no explanation:
-{"queryId": "Custom_<Cloud>_<Service>_<PascalCaseDescription>", "queryText": "{ source { ... } filter { ... } return distinct { ... } }", "searchTerm": "<optional short keyword — omit if not applicable>"}"""
+{"queryId": "Custom_<Cloud>_<Service>_<PascalCaseDescription>", "queryText": "{ source { ... } filter { ... } return distinct { ... } }", "searchTerm": "<optional short keyword — omit if not applicable>"}
+The "queryText" value must be raw LQL only — never wrap it in ```, <code>, <pre>, or any other markup."""
 
         if _schema_hints:
             system_prompt += f'\n\n━━ LIVE TENANT CONTEXT ━━\n{_schema_hints}'
@@ -2309,11 +2553,24 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             {'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'},
         ]
         def _call_claude(msgs):
-            body = json.dumps({'model': MODEL or 'claude-haiku-4-5', 'max_tokens': 2048, 'messages': msgs}).encode()
-            r = urllib.request.Request(
-                current_upstream().rstrip('/') + '/v1/messages', data=body, method='POST',
-                headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY, 'anthropic-version': '2023-06-01'})
-            resp = urllib.request.urlopen(r, timeout=60)
+            # Anthropic-native gateways speak /v1/messages + x-api-key; Ollama and other
+            # OpenAI-compatible gateways speak /chat/completions + Bearer auth. MODEL is the
+            # only signal we have for which kind of upstream ANTHROPIC_BASE_URL points at.
+            if MODEL.startswith('claude'):
+                body = json.dumps({'model': MODEL or 'claude-haiku-4-5', 'max_tokens': 2048, 'messages': msgs}).encode()
+                r = urllib.request.Request(
+                    current_upstream().rstrip('/') + '/v1/messages', data=body, method='POST',
+                    headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY, 'anthropic-version': '2023-06-01'})
+            else:
+                body = json.dumps({'model': MODEL, 'max_tokens': 2048, 'messages': msgs}).encode()
+                r = urllib.request.Request(
+                    current_upstream().rstrip('/') + '/chat/completions', data=body, method='POST',
+                    headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {VIRTUAL_KEY}'})
+            # 240s, not 60s: the ~24k-token datasource-catalog system prompt (every /lql/generate
+            # call injects all ~2340 real datasource names, see _all_lql_datasources_text) is fine
+            # for cloud Claude/Haiku but measured ~4 minutes on a local Ollama 7B model on CPU —
+            # a 60s timeout killed every local-model attempt before it could respond at all.
+            resp = urllib.request.urlopen(r, timeout=240)
             resp_data = json.loads(resp.read())
             if 'content' in resp_data and resp_data['content']:
                 raw = resp_data['content'][0].get('text', '')
@@ -2322,18 +2579,19 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             else:
                 raise ValueError(f'Unrecognised response shape: {list(resp_data.keys())}')
             raw = raw.strip()
-            if raw.startswith('```'):
-                raw = '\n'.join(raw.split('\n')[1:])
-                if raw.endswith('```'):
-                    raw = raw[:-3].strip()
-            brace = raw.find('{')
+            stripped = raw
+            if stripped.startswith('```'):
+                stripped = '\n'.join(stripped.split('\n')[1:])
+                if stripped.endswith('```'):
+                    stripped = stripped[:-3].strip()
+            brace = stripped.find('{')
             if brace > 0:
-                raw = raw[brace:]
+                stripped = stripped[brace:]
             # Parse only the first JSON object — models sometimes append trailing
             # commentary or a duplicate object after the closing brace, which
             # would otherwise raise "Extra data" from a strict json.loads().
-            obj, _ = json.JSONDecoder().raw_decode(raw)
-            return obj
+            obj, _ = json.JSONDecoder().raw_decode(stripped)
+            return obj, raw
 
         def _validate_lql(query_text):
             """Validate query syntax only. Returns error string or None if valid."""
@@ -2404,18 +2662,21 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
 
         def _call_claude_retryable(msgs):
             """Call Claude and parse its JSON reply. Never raises — returns
-            (result, None) on success or (None, error_str) if the reply wasn't
-            parseable JSON, so a malformed model reply is a retryable condition
-            instead of an unhandled exception that aborts the whole request."""
+            (result, None, raw) on success or (None, error_str, raw) if the reply wasn't
+            parseable JSON (raw is '' if the call itself failed before any text came back),
+            so a malformed model reply is a retryable condition instead of an unhandled
+            exception that aborts the whole request."""
             try:
-                return _call_claude(msgs), None
+                obj, raw = _call_claude(msgs)
+                return obj, None, raw
             except (json.JSONDecodeError, ValueError) as e:
-                return None, f'Model reply was not valid JSON: {e}'
+                raw = getattr(e, 'doc', '') if isinstance(e, json.JSONDecodeError) else ''
+                return None, f'Model reply was not valid JSON: {e}', raw
 
         try:
             messages = [{'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'}]
             emit({'type': 'attempt', 'attempt': 1, 'max': 20, 'phase': 'asking_claude'})
-            result, last_err = _call_claude_retryable(messages)
+            result, last_err, last_raw = _call_claude_retryable(messages)
 
             # validate-then-fix loop — validate syntax first (fast), then run for real.
             # Each iteration: if an error occurs and retries remain, feed the error back to
@@ -2428,18 +2689,51 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                 if result is None:
                     print(f'  [LQL] attempt {attempt+1}/{MAX_RETRIES} — ✗ parse error: {last_err}')
                     if attempt < MAX_RETRIES - 1:
+                        # Must append an assistant turn (the model's own failed reply) before the
+                        # next user turn — two consecutive bare user messages with no assistant
+                        # turn between them is a malformed conversation shape that causes Ollama
+                        # to silently drop the earlier (huge) user message on the next call
+                        # (observed: prompt_tokens fell from 16386 to 78). The other retry paths
+                        # (validation/run errors below) already do this correctly.
+                        messages.append({'role': 'assistant', 'content': last_raw or '(empty reply)'})
                         messages.append({'role': 'user', 'content': (
                             f'Your last reply could not be parsed as JSON:\n{last_err}\n\n'
                             'Respond with ONLY the JSON object — no markdown, no commentary before or after it.'
                         )})
                         print(f'  [LQL]   → asking Claude to retry (attempt {attempt+2})')
                         emit({'type': 'attempt', 'attempt': attempt + 2, 'max': MAX_RETRIES, 'phase': 'asking_claude'})
-                        result, last_err = _call_claude_retryable(messages)
+                        result, last_err, last_raw = _call_claude_retryable(messages)
                     continue
 
                 query_text = result.get('queryText', '')
-                if not query_text or result.get('queryId') == 'USE_CVE_TAB':
+                if result.get('queryId') == 'USE_CVE_TAB':
                     break
+                if query_text:
+                    # Defensive scrub: models occasionally wrap queryText in markup
+                    # (e.g. <code class="language-text">...</code>) despite the prompt's
+                    # instruction not to — strip any leading/trailing HTML tag so the raw
+                    # LQL string, not the wrapper, reaches the extension's textContent render.
+                    stripped_qt = re.sub(r'^\s*<[^>]+>\s*|\s*</[^>]+>\s*$', '', query_text).strip()
+                    if stripped_qt != query_text:
+                        query_text = stripped_qt
+                        result['queryText'] = query_text
+                if not query_text:
+                    # Valid JSON, but not the shape we asked for (e.g. the model echoed an
+                    # unrelated config fragment from the datasource examples in the prompt
+                    # instead of {"queryId":...,"queryText":...}) — retryable, not done.
+                    last_err = f'Reply was valid JSON but missing "queryText": {json.dumps(result)[:300]}'
+                    print(f'  [LQL] attempt {attempt+1}/{MAX_RETRIES} — ✗ {last_err}')
+                    if attempt < MAX_RETRIES - 1:
+                        messages.append({'role': 'assistant', 'content': last_raw or json.dumps(result)})
+                        messages.append({'role': 'user', 'content': (
+                            'That reply was valid JSON but did not match the required shape — it must be '
+                            '{"queryId": "...", "queryText": "{ source { ... } filter { ... } return distinct { ... } }"}. '
+                            'Respond with ONLY that JSON object for the original objective.'
+                        )})
+                        print(f'  [LQL]   → asking Claude to retry (attempt {attempt+2})')
+                        emit({'type': 'attempt', 'attempt': attempt + 2, 'max': MAX_RETRIES, 'phase': 'asking_claude'})
+                        result, last_err, last_raw = _call_claude_retryable(messages)
+                    continue
 
                 print(f'  [LQL] attempt {attempt+1}/{MAX_RETRIES} — query: {query_text[:120].replace(chr(10)," ")}…')
                 emit({'type': 'attempt', 'attempt': attempt + 1, 'max': MAX_RETRIES, 'phase': 'validating'})
@@ -2461,7 +2755,7 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                         )})
                         print(f'  [LQL]   → asking Claude to fix (attempt {attempt+2})')
                         emit({'type': 'attempt', 'attempt': attempt + 2, 'max': MAX_RETRIES, 'phase': 'asking_claude'})
-                        result, last_err = _call_claude_retryable(messages)
+                        result, last_err, last_raw = _call_claude_retryable(messages)
                     continue  # re-enter loop with corrected result (or exit on final attempt)
 
                 print(f'  [LQL]   ✓ validation passed — running…')
@@ -2493,7 +2787,7 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
                     )})
                     print(f'  [LQL]   → asking Claude to fix (attempt {attempt+2})')
                     emit({'type': 'attempt', 'attempt': attempt + 2, 'max': MAX_RETRIES, 'phase': 'asking_claude'})
-                    result, last_err = _call_claude_retryable(messages)
+                    result, last_err, last_raw = _call_claude_retryable(messages)
 
             # If all retries exhausted with an error, surface it rather than returning empty
             if last_err and cached_rows is None and (result or {}).get('queryId') != 'USE_CVE_TAB':
@@ -2562,9 +2856,8 @@ Respond with ONLY a valid JSON object — no markdown, no code fences, no explan
             msg = str(e)
             if 'Name or service not known' in msg or 'urlopen error' in msg:
                 target = current_upstream()
-                hint = 'HEADROOM_URL' if _headroom_enabled() else 'ANTHROPIC_BASE_URL'
                 msg = (f'Cannot reach AI gateway ({target}). '
-                       f'Check that {hint} in .env points to a reachable address and restart the server.')
+                       f'Check that ANTHROPIC_BASE_URL in .env points to a reachable address and restart the server.')
             emit({'type': 'error', 'error': msg})
 
     def serve_lql_run(self):
@@ -2680,7 +2973,7 @@ def _user_first_name():
         return env['USER_NAME'].split()[0]
     # macOS: id -F returns full name (e.g. "Sam Vuillaume")
     try:
-        full = subprocess.check_output(['id', '-F'], text=True, timeout=2).strip()
+        full = subprocess.check_output(['id', '-F'], text=True, timeout=2, stderr=subprocess.DEVNULL).strip()
         if full:
             return full.split()[0]
     except Exception:
@@ -2731,9 +3024,8 @@ LW_PROFILE = _lw_profile()
 account, api_key, api_secret = _lw_creds()
 LW_READY = bool(account and api_key and api_secret)
 
-print(f'FortiCNAPP AI Agent  →  http://localhost:{PORT}')
-print(f'Gateway       →  {current_upstream().rstrip("/")}/v1/*  key:{"ok" if VIRTUAL_KEY else "MISSING"}'
-      f'{"  (via TokenIQ)" if _headroom_enabled() else ""}')
+print(f'FortiAIScout  →  http://localhost:{PORT}')
+print(f'Gateway       →  {current_upstream().rstrip("/")}/v1/*  key:{"ok" if VIRTUAL_KEY else "MISSING"}')
 print(f'FortiCNAPP    →  creds:{"ok" if LW_READY else "MISSING"}  cli:{"ok" if LW_AVAILABLE else "not found"}')
 print(f'LQL dir       →  {LQL_QUERIES_DIR or "not set"}')
 
@@ -2902,6 +3194,20 @@ def _mcp_call_tool(name, arguments, timeout=60):
         return {'success': not result.get('isError', False), 'data': None}
 
 
+def _group_collected_rows(collected_rows):
+    """Group /mcp/forensic's (tool_name, row_dict) pairs by tool, preserving first-seen
+    order — one raw-data table per tool in the client, same shape/columns as whatever
+    FortiCNAPP actually returned, no templating or GenAI-written text involved."""
+    groups: dict = {}
+    order = []
+    for tool_name, row in collected_rows:
+        if tool_name not in groups:
+            groups[tool_name] = []
+            order.append(tool_name)
+        groups[tool_name].append(row)
+    return [{'tool': t, 'rows': groups[t]} for t in order]
+
+
 def _bound_mcp_tool_result(result, items, limit=20000):
     """Serialize an MCP tool result for the model's tool_result content,
     staying under `limit` chars without corrupting the JSON or silently
@@ -2961,6 +3267,6 @@ if _port_open(PORT):
     print(f'  Windows:     Stop-Process -Id (Get-NetTCPConnection -LocalPort {PORT}).OwningProcess')
     raise SystemExit(1)
 
-socketserver.TCPServer.allow_reuse_address = True
-with socketserver.TCPServer(('', PORT), Handler) as httpd:
+http.server.ThreadingHTTPServer.allow_reuse_address = True
+with http.server.ThreadingHTTPServer(('', PORT), Handler) as httpd:
     httpd.serve_forever()

@@ -53,6 +53,25 @@ FortiCNAPP credentials: `~/.lacework.toml` (from `lacework configure`), mounted 
 
 **`extension/config.json`** — offline fallback config for the extension when `serve.py` is not running. Create from `config.json.tpl` and fill in `gateway_url` and `api_key`. The extension tries `GET /config` from serve.py first; if that fails, it falls back to this bundled file. It is not committed (untracked in git).
 
+## Switching AI Gateways
+
+**Single source of truth:** `.env` file. One variable set per gateway:
+- `ANTHROPIC_BASE_URL` — the AI gateway endpoint (Bifrost remote, Ollama local, etc.)
+- `ANTHROPIC_AUTH_TOKEN` — API key for that gateway
+- `ANTHROPIC_DEFAULT_MODEL` — the model to use (varies by gateway)
+
+**Pre-configured templates:**
+- `.env.bifrost` — Bifrost/Claude models (`qwen2.5-7b:instruct`, `claude-haiku-4-5`, etc.)
+- `.env.ollama` — Local Ollama (`qwen2.5-7b:instruct`)
+
+**Quick switch:**
+```bash
+./switch-gateway.sh bifrost    # Use Bifrost (remote Claude)
+./switch-gateway.sh ollama     # Use Ollama (local LLM)
+```
+
+The script copies the template to `.env` and restarts the Docker container. If using `serve.py` directly (not Docker), restart manually after switching.
+
 ## Architecture
 
 ```
@@ -65,7 +84,7 @@ Chrome Extension (extension/)
   │
   └─ Security tools ► serve.py  localhost:45321
                            ├──► FortiCNAPP REST API  (via lacework CLI)
-                           ├──► lacework CLI  (SCA/SAST, SBOM, LQL validate/run)
+                           ├──► lacework CLI  (SCA/SAST, IaC misconfig, SBOM, LQL validate/run)
                            ├──► FortiGuard  (outbreak RSS + page scrape, cached 30 min)
                            ├──► NVD / EPSS / CISA KEV  (CVE intel aggregation)
                            └──► vendor/mcp_forticnapp subprocess  (Cloud Investigation — see below)
@@ -97,7 +116,7 @@ Note: the request path above is for FortiCNAPP AI Agent's own chat traffic (WebA
 |---|---|---|
 | GET | `/config` | Returns gateway URL, key, `lw_ready` flag |
 | POST | `/proxy/v1/*` | Proxies to AI gateway upstream |
-| POST | `/codesec` | lacework SCA + SAST on submitted code |
+| POST | `/codesec` | lacework SCA + SAST + IaC misconfig scan on submitted code |
 | POST | `/sbom` | CycloneDX SBOM via lacework |
 | POST | `/compliance` | Compliance PDF |
 | GET | `/compliance/list` | List available compliance reports |
@@ -159,7 +178,6 @@ The extension reads its initial config from `GET /config` on `localhost:45321`.
 ## Key constraints
 
 - `serve.py` itself must remain zero-dependency (Python stdlib only) — no pip installs *imported by* `serve.py`. The Dockerfile does `pip install` the vendored `vendor/mcp_forticnapp` package (for Cloud Investigation), but `serve.py` only ever reaches it via `subprocess.Popen`, never `import`, so this constraint holds for the file itself.
-- The Dockerfile installs the lacework CLI via its install script during build — lacework SCA component is pre-installed to avoid download delays at runtime.
-- The extension has one vendored third-party dependency: pdf.js (`extension/vendor/pdfjs/`, `pdfjs-dist@6.2.108` — provenance in `extension/vendor/pdfjs/README.md`) for PDF text extraction in TL;DR (see `extension/panel.js`). It is not a live npm dependency — it's a one-time copy, like `vendor/mcp_forticnapp`. This is the first and only external library in the extension.
+- The Dockerfile installs the lacework CLI via its install script during build — lacework SCA and IaC components are pre-installed to avoid download delays at runtime. `checkov` is also `pip install`ed at build time: `lacework iac scan --disable-docker` (Dockerfile/Terraform/K8s misconfig scanning for `/codesec`) shells out to `checkov` natively rather than its default `docker run` mode, since the container has no docker-in-docker access — without `checkov` on PATH, IaC scanning fails outright.
 - The extension's CSP (`manifest.json`) restricts `connect-src` to `localhost:45321`, `https://api.github.com`, `https://raw.githubusercontent.com`, and `https://*` — any new fetch target must be added there.
 - There is no automated test suite or linter in this repo (`serve.py` and the extension are both plain, framework-free code). Verify changes by running the backend and exercising the affected flow through the extension or `chatbox.html`.

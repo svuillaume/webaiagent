@@ -1,4 +1,6 @@
 .env
+.env.ollama
+bifrost.env
 
 .serve.pid
 serve.log

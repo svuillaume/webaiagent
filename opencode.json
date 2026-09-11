@@ -1,0 +1,30 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "ollama-local/qwen2.5:7b-instruct",
+  "instructions": ["./vendor/mcp_forticnapp/docker/system-prompt-tui.md"],
+  "provider": {
+    "ollama-local": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Ollama (local)",
+      "options": {
+        "baseURL": "http://localhost:11434/v1"
+      },
+      "models": {
+        "qwen2.5:7b-instruct": {
+          "name": "qwen2.5:7b-instruct",
+          "tool_call": true,
+          "limit": { "context": 32768, "output": 4096 }
+        }
+      }
+    }
+  },
+  "mcp": {
+    "forticnapp": {
+      "type": "local",
+      "command": ["./run_native.sh"],
+      "cwd": "vendor/mcp_forticnapp",
+      "enabled": true,
+      "timeout": 30000
+    }
+  }
+}
