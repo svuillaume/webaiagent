@@ -293,7 +293,7 @@ def _fg_outbreaks_cached():
     try:
         req = urllib.request.Request(
             'https://www.fortiguard.com/rss/outbreakalert.xml',
-            headers={'User-Agent': 'Mozilla/5.0 FortiAIScout/1.0'},
+            headers={'User-Agent': 'Mozilla/5.0 FortiCNAPP AI Agent/1.0'},
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             xml_bytes = r.read()
@@ -345,7 +345,7 @@ def _fetch_cve_intel(cve: str) -> dict:
 
     def _get_json(url, headers=None, timeout=8):
         try:
-            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'FortiAIScout/1.0'})
+            req = urllib.request.Request(url, headers=headers or {'User-Agent': 'FortiCNAPP AI Agent/1.0'})
             with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read())
         except Exception:
@@ -449,7 +449,7 @@ def _scrape_fg_outbreak(slug: str) -> dict:
     """Scrape a FortiGuard outbreak-alert page and return structured signals."""
     url = f'https://fortiguard.fortinet.com/outbreak-alert/{slug}'
     try:
-        req  = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 FortiAIScout/1.0'})
+        req  = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 FortiCNAPP AI Agent/1.0'})
         with urllib.request.urlopen(req, timeout=12) as r:
             html = r.read().decode('utf-8', errors='replace')
     except Exception:
