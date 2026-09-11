@@ -1,5 +1,7 @@
 'use strict';
 
+import { CreateMLCEngine } from './vendor/web-llm/web-llm.js';
+
 // ── Constants ─────────────────────────────────────────────────────────────
 const BASE_URL       = 'http://localhost:45321';
 // 8192, not 4096: the Risk Hunting / CVE report template now requires one row per matching
@@ -7,80 +9,116 @@ const BASE_URL       = 'http://localhost:45321';
 // truncates the table mid-row, silently dropping resources from the report.
 const MAX_TOKENS     = 8192;
 const PAGE_MAX_CHARS = 12000;
-const SYSTEM_PROMPT = `You are a security engineer. For security findings, answer in plain Markdown — no exec-summary prose, no filler, no walls of text.
+const SYSTEM_PROMPT = `You are a security engineer having a terminal-style chat — answer like a CLI tool would, not like you're writing a report. Be concise and direct: minimum words to convey the answer fully, no repetition, no filler, no walls of text, no exec-summary preamble.
 
 ## Structure
-If the user's message includes an explicit report template, follow that EXACTLY instead of the structure below — it takes precedence. Otherwise, default to:
-1. **Objective** — one line: what was investigated or the question being answered.
-2. **Findings** — a standard Markdown table (pipe syntax) listing every matched resource, one row each. If there are zero matches, say so in one line instead of an empty table.
-3. **Fix** — only if remediation applies: a short numbered list, one line each, exact command/console step in a fenced code block. Omit entirely for pure inventory/lookup questions.
-
-## Components
-
-Table — use for ANY list of 2+ resources (instances, buckets, roles, findings, etc.). Real Markdown pipe-table syntax, not HTML. Pick columns that fit the data:
-| Resource | Type | Region/Account | Detail |
-|---|---|---|---|
-| i-0abc123 | EC2 | us-east-1 · 123456789012 | <span class="rpt-badge high">HIGH</span> public IP, no IMDSv2 |
-
-Severity badge (inline, sparingly — flag a critical/high row inside a table cell, not decoration): <span class="rpt-badge critical">CRITICAL</span> <span class="rpt-badge high">HIGH</span> — this is the ONLY raw HTML allowed; everything else must be plain Markdown.
+If the user's message includes an explicit report template, follow that EXACTLY instead of everything below — it takes precedence (this applies to Risk Hunting / CVE report generation, not normal chat). Otherwise:
+- Lead with the answer, not a restatement of the question.
+- Plain prose and short bullet lists by default — one fact per line, no filler sentences around them.
+- A resource/identifier stands on its own line as \`inline code\` (e.g. \`i-0abc123\` — \`ec2\` — \`us-east-1\`), not padded into a table row, unless there are genuinely many resources (5+) with several attributes each where a Markdown table is actually more scannable than a list.
+- Fenced code blocks for actual commands/config only.
+- Skip sections that don't apply — no empty "Fix" heading when there's nothing to fix, no headings at all for a short answer.
 
 ## Rules
-- Prefer the table over prose or cards for any resource list — more compact, easier to scan.
-- No metric-strip cards, no per-resource cards, no colored callout boxes — this is an engineering report, not an exec deck.
-- Fix section: exact commands only, skip the "why" paragraphs.
-- For non-security questions, skip this structure and answer directly.`;
+- No badges, no colored callouts, no card layouts, no raw HTML of any kind — plain Markdown only.
+- For non-security questions, just answer directly.
+
+## Help / identity
+Only when the user directly asks something like "what can you do", "help", "who are you", or "what's your name" — never unprompted, never prepended to an unrelated answer — reply warmly, positively, like a friendly human colleague (not a corporate script), covering:
+- Your name is **FortiAIScout** — a Cloud Security Engineer sitting next to them while they browse.
+- Explicitly state: you rely on **FortiCNAPP** to detect Risk Findings across Public Cloud environments (compliance reports, CVE lookups, LQL queries, full cloud posture investigation).
+- Quick capability list: Explain selected text (drops it into this chat) · TL;DR page summaries · right-click "Ask AI about selection" (works on any page, even PDFs) · Scan Code (SCA + SAST) · FortiCNAPP tools (Compliance, Risk Hunting, Attack Surface) · Admin (swap AI gateway/model).
+Keep it upbeat and human, not a wall of bullet-point marketing copy.`;
 const ROLE_LABELS    = { user: 'you', ai: 'ai', system: 'sys' };
 
-// ── Gateway profiles ──────────────────────────────────────────────────────
-const GATEWAYS = {
-  bifrost:  {
-    label:    '⚡ Bifrost',
-    urlHint:  'https://bifrost.xxx',
-    keyHint:  'sk-bf-…',
-    keyLabel: 'key',
-    headers: key => ({
-      'Content-Type':      'application/json',
-      'x-api-key':         key,
-      'anthropic-version': '2023-06-01',
-    }),
-  },
-  portkey:  {
-    label:    'Portkey',
-    urlHint:  'https://api.portkey.ai',
-    keyHint:  'pk-…',
-    keyLabel: 'key',
-    headers: key => ({
-      'Content-Type':      'application/json',
-      'x-portkey-api-key': key,
-      'anthropic-version': '2023-06-01',
-    }),
-  },
-  litellm:  {
-    label:    'LiteLLM',
-    urlHint:  'https://litellm.xxx',
-    keyHint:  'sk-…',
-    keyLabel: 'key',
-    headers: key => ({
-      'Content-Type':      'application/json',
-      'Authorization':     `Bearer ${key}`,
-      'anthropic-version': '2023-06-01',
-    }),
-  },
-  helicone: {
-    label:    'Helicone',
-    urlHint:  'https://anthropic.helicone.ai',
-    keyHint:  'sk-ant-… (Anthropic key)',
-    keyLabel: 'ant-key',
-    headers: (key, heliconeKey) => ({
-      'Content-Type':      'application/json',
-      'x-api-key':         key,
-      'anthropic-version': '2023-06-01',
-      ...(heliconeKey ? { 'helicone-auth': `Bearer ${heliconeKey}` } : {}),
-    }),
-  },
-};
+// Shown next to the cursor while the model loads/generates — removed the moment the first
+// token streams in, so it never lingers alongside real output.
+const GENAI_FUN_FACTS = [
+  'GPT stands for "Generative Pre-trained Transformer" — the Transformer architecture behind it was introduced by Google in 2017.',
+  'Large language models don\'t "look up" answers — they predict the next token, one at a time, from patterns learned during training.',
+  'A "token" isn\'t a word — it\'s often a word-piece; "unbelievable" might be split into "un", "believ", "able".',
+  'Quantization (e.g. q4f16) shrinks a model\'s weights to 4-bit precision — a ~4x size cut with only a small accuracy tradeoff.',
+  'WebGPU lets a browser tap your GPU directly for tensor math — no plugin, no native app, just JavaScript.',
+  'Temperature controls randomness: 0 is deterministic and repeatable, higher values let the model take creative risks.',
+  '"Hallucination" is when a model states something fluent and confident that isn\'t true — a known failure mode of next-token prediction.',
+  'The context window is the model\'s working memory — everything outside it is simply invisible to the next prediction.',
+  'Chain-of-thought prompting — asking a model to "think step by step" — can noticeably improve reasoning accuracy on hard questions.',
+  'Running a model fully on-device (like this extension does) means your prompts never leave your machine.',
+];
+function randomFunFact() {
+  return GENAI_FUN_FACTS[Math.floor(Math.random() * GENAI_FUN_FACTS.length)];
+}
+function makeFunFact() {
+  const span = document.createElement('span');
+  span.className   = 'fun-fact';
+  span.textContent = `${randomFunFact()}`;
+  return span;
+}
 
-const WEB_SEARCH_TOOL = { type: 'web_search_20260209', name: 'web_search' };
+// ── On-device model (WebLLM / WebGPU) ──────────────────────────────────────
+// Qwen3-4B was replaced: too greedy/verbose for report generation even with prompt tuning.
+// Qwen2.5-3B-Instruct is the default — generation speed on WebGPU scales with parameter count,
+// and 7B was too slow for interactive chat on non-discrete GPUs. Qwen2.5-7B-Instruct and
+// Qwen2.5-Coder-7B remain as opt-in alternatives when quality matters more than speed (7B is
+// noticeably better at complex report reasoning; Coder-7B for code-heavy CodeSec/SBOM
+// follow-up). Low temperature (0.2) on all these for deterministic, repeatable report output
+// rather than creative variation.
+const WEBLLM_MODELS = {
+  'Qwen2.5-3B-Instruct-q4f16_1-MLC': 'Qwen2.5-3B-Instruct (fast)',
+  'Qwen2.5-7B-Instruct-q4f16_1-MLC': 'Qwen2.5-7B-Instruct',
+  'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC': 'Qwen2.5-Coder-7B',
+  'Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC': 'Hermes-2-Pro-Llama-3-8B',
+  'Hermes-3-Llama-3.1-8B-q4f16_1-MLC': 'Hermes-3-Llama-3.1-8B',
+};
+const DEFAULT_WEBLLM_MODEL = 'Qwen2.5-3B-Instruct-q4f16_1-MLC';
+const CHAT_TEMPERATURE = 0.2;
+let webllmModel = localStorage.getItem('webllm_model') || DEFAULT_WEBLLM_MODEL;
+if (!WEBLLM_MODELS[webllmModel]) webllmModel = DEFAULT_WEBLLM_MODEL;
+let enginePromise = null;
+let engineModel = null;
+
+// Both Qwen2.5-7B variants default context_window_size to 4096 in WebLLM's prebuilt config —
+// too small for the Risk Hunting / CVE report prompts (row data + template routinely exceeds
+// 8k input tokens alone, before MAX_TOKENS of output). Override to 16384, comfortably above
+// MAX_TOKENS + the 100-row prompt cap, while staying within what q4f16_1's KV cache can hold
+// on typical GPUs. Hermes-2-Pro-Llama-3-8B (Cloud Investigation on-device's tool-calling model)
+// needs this too — its MCP tool-schema prompt alone runs ~11.5k tokens, above even an 8192
+// window — so there's no smaller window that both fits the prompt and reduces VRAM pressure;
+// GPU memory constraints have to be solved by freeing VRAM elsewhere, not by shrinking this.
+function getEngine(onProgress) {
+  if (!enginePromise) {
+    engineModel = webllmModel;
+    enginePromise = CreateMLCEngine(webllmModel, {
+      initProgressCallback: onProgress,
+    }, {
+      context_window_size: 16384,
+    });
+    // A failed load must not stick around as a permanently-rejected cached promise —
+    // otherwise every future getEngine() call replays the same failure forever.
+    enginePromise.catch(() => { enginePromise = null; engineModel = null; });
+  } else if (engineModel !== webllmModel) {
+    engineModel = webllmModel;
+    enginePromise = enginePromise.then(engine =>
+      engine.reload(webllmModel, { context_window_size: 16384 }).then(() => engine)
+    );
+    enginePromise.catch(() => { enginePromise = null; engineModel = null; });
+  }
+  return enginePromise;
+}
+
+// WebGPU can invalidate the device out from under an already-created engine (GPU process
+// reset, side panel suspended/resumed, laptop sleep, etc.) — e.g. "A valid external Instance
+// reference no longer exists." The engine object is cached at module scope, so without this
+// the same dead engine would be reused and fail identically on every subsequent attempt until
+// the extension is manually reloaded. Detect that class of error and drop the cache so the next
+// call rebuilds the engine from scratch.
+function invalidateEngineOnGpuError(err) {
+  if (/instance reference|device.*lost|lost.*device|invalid.*gpu/i.test(err?.message || '')) {
+    enginePromise = null;
+    engineModel = null;
+  }
+}
+
 const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -88,65 +126,15 @@ const history = [];
 let busy = false;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────
-const el          = id => document.getElementById(id);
-const urlInput    = el('url-input');
-const keyInput    = el('key-input');
-const key2Input   = el('key2-input');   // hidden — holds Helicone secondary auth key
+const el = id => document.getElementById(id);
 
 const setStatus = (text, state = '') => {
   el('status').textContent = text;
   el('status').className   = state;
 };
 
-// Cloud Investigation is a multi-turn native tool-calling loop — it needs the model to return
-// proper tool_use blocks on every turn. Non-Claude models routed through this gateway (confirmed
-// with deepseek-v4-pro) can instead leak their own tool-call markup as literal text, which then
-// shows up as a garbled, irrelevant-looking "final answer" with no indication anything went
-// wrong. serve.py rejects this server-side too — this just fails visibly before the user tries.
-function updateInvestigateAvailability() {
-  const isClaude = el('model').value.startsWith('claude');
-  const tip = isClaude ? '' :
-    'Cloud Investigation requires a Claude model — switch models in Admin → LLM Model to enable it.';
-  const tab = document.querySelector('.lql-tab[data-tab="investigate"]');
-  if (tab) {
-    tab.classList.toggle('lw-disabled', !isClaude);
-    tab.title = tip;
-  }
-  el('investigate-btn').disabled    = !isClaude;
-  el('investigate-btn').title       = tip;
-  el('investigate-prompt').disabled = !isClaude;
-  el('investigate-prompt').title    = tip;
-}
-
 // ── Storage ───────────────────────────────────────────────────────────────
-// session = auto-cleared on Chrome close (keeps credentials out of disk); local = survives restarts (safe for non-secret prefs)
-chrome.storage.session.get(['bf_url', 'bf_key', 'bf_key2'], ({ bf_url, bf_key, bf_key2 }) => {
-  if (bf_url)  urlInput.value  = bf_url;
-  if (bf_key)  keyInput.value  = bf_key;
-  if (bf_key2) key2Input.value = bf_key2;
-  if (!bf_url || !bf_key) autoFillFromConfig();
-});
-chrome.storage.local.get(['bf_model', 'bf_gateway'], ({ bf_model, bf_gateway }) => {
-  if (bf_model)  el('model').value   = bf_model;
-  if (bf_gateway && GATEWAYS[bf_gateway]) {
-    el('gateway').value = bf_gateway;
-    applyGatewayProfile(bf_gateway);
-  }
-  updateInvestigateAvailability();
-});
-
-function applyGatewayProfile(gw) {
-  const p = GATEWAYS[gw] || GATEWAYS.bifrost;
-  urlInput.placeholder          = p.urlHint;
-  keyInput.placeholder          = p.keyHint;
-  el('key-label').textContent   = p.keyLabel;
-}
-
-el('gateway').addEventListener('change', () => {
-  const gw = el('gateway').value;
-  applyGatewayProfile(gw);
-  chrome.storage.local.set({ bf_gateway: gw });
-});
+autoFillFromConfig();
 
 async function autoFillFromConfig() {
   let cfg = null;
@@ -164,26 +152,12 @@ async function autoFillFromConfig() {
 
   if (!cfg) return;
 
-  const fill = (input, cfgKey, storeKey) => {
-    if (cfg[cfgKey] && !input.value) {
-      input.value = cfg[cfgKey];
-      chrome.storage.session.set({ [storeKey]: cfg[cfgKey] });
-    }
-  };
-  fill(urlInput,  'gateway_url', 'bf_url');
-  fill(keyInput,  'api_key',     'bf_key');
-  if (cfg.gateway_url || cfg.api_key) {
-    const gw = el('gateway').value || 'bifrost';
-    setStatus(gw === 'bifrost' ? 'Bifrost Status OK' : 'config loaded', 'ok');
-  }
-
   const lwReady = cfg.lw_ready !== false;   // creds — LQL/CVE/Compliance
   const lwCli   = cfg.lw_cli   !== false;   // CLI binary — CodeSec/SBOM
 
   [['codesec', lwCli,   '⚠ lacework CLI not installed — CodeSec unavailable'],
    ['compliance', lwReady, '⚠ FortiCNAPP credentials not found (add ~/.lacework.toml)'],
    ['lql',        lwReady, '⚠ FortiCNAPP credentials not found (add ~/.lacework.toml)'],
-   ['cve-btn',    lwReady, '⚠ FortiCNAPP credentials not found (add ~/.lacework.toml)'],
   ].forEach(([id, enabled, tip]) => {
     const btn = el(id);
     if (!btn) return;
@@ -199,6 +173,12 @@ async function autoFillFromConfig() {
     fcBtn.title = (lwReady && lwCli)
       ? 'FortiCNAPP tools'
       : 'FortiCNAPP tools — ⚠ some features unavailable (see individual buttons)';
+  }
+
+  const tenantEl = el('fcnapp-tenant');
+  if (tenantEl && cfg.lw_account) {
+    tenantEl.innerHTML = `Tenant: <strong>${esc(cfg.lw_account)}</strong>`;
+    tenantEl.style.display = 'flex';
   }
 }
 
@@ -228,44 +208,9 @@ async function showGreeting() {
   }
 
   const name = firstName ? `, ${firstName.charAt(0).toUpperCase() + firstName.slice(1)}` : '';
-  appendTurn('ai', `**${greeting()}${name}!** 👋 I'm **FortiAIScout** — think of me as a security engineer sitting next to you while you browse. Whatever you're looking at, I'm happy to dig in with you.
-
-And if you're a **FortiCNAPP** customer, I can plug directly into your environment — compliance reports, CVE lookups, LQL queries, and full cloud posture investigation, all from right here.
-
-Here's what I can help with:
-
-• 🌐 **Translate** — select text on the page, translate it to English · **TL;DR** — get a quick plain-English page summary · [example](https://github.com/svuillaume/webaiagent#what-does-it-do)
-• 🖱 **Select text → right-click → "Ask AI about selection"** — works on any page, even PDFs · [example](https://github.com/svuillaume/webaiagent#what-does-it-do)
-• 🛡 **Scan Code** — SCA + SAST on code from this page or a GitHub repo · [example](https://github.com/svuillaume/webaiagent#features)
-  - SAST: Go · Java · JavaScript · PHP · Python · TypeScript
-  - SCA: .NET · C/C++ · Go · Java · Node.js · PHP · Python · Ruby · Rust
-• 🔰 **FortiCNAPP** — Compliance, Risk Hunting, and Attack Surface analysis (Scan Code lives in this menu too) · [walkthrough](https://github.com/svuillaume/webaiagent#end-to-end-workflow)
-• ⚙ **Admin** — swap AI gateway, model, or the TokenSaving compression proxy any time · [details](https://github.com/svuillaume/webaiagent#environment-variables-env)
-
-Ask me anything, or pick a tool above to get started.`);
+  appendTurn('ai', `**${greeting()}${name}!** I'm **FortiAIScout** — think of me as a Cloud Security Engineer sitting next to you, enabling Cloud Risk Findings Hunting.`);
 }
 showGreeting();
-
-const saveSession = (key, input) => {
-  const v = input.value.trim();
-  v ? chrome.storage.session.set({ [key]: v }) : chrome.storage.session.remove(key);
-};
-
-urlInput.addEventListener('change',  () => saveSession('bf_url',  urlInput));
-keyInput.addEventListener('change',  () => saveSession('bf_key',  keyInput));
-key2Input.addEventListener('change', () => saveSession('bf_key2', key2Input));
-el('model').addEventListener('change', () => {
-  const model = el('model').value;
-  chrome.storage.local.set({ bf_model: model });
-  updateInvestigateAvailability();
-  // Persist to .env's ANTHROPIC_DEFAULT_MODEL so server-side calls (/lql/generate) stay in
-  // sync with whatever model the user is chatting with — best-effort, non-blocking.
-  fetch(BASE_URL + '/model', {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({ model }),
-  }).catch(() => { /* offline — local chat still uses the picked model regardless */ });
-});
 
 
 // ── Markdown renderer ─────────────────────────────────────────────────────
@@ -536,8 +481,8 @@ function makePdfBtn(getSourceEl) {
       'fg-date':          'color:#888;font-size:10px;margin-left:auto;',
       'cve-summary':      'margin:6px 0;font-size:12px;',
       // Report visual components — minimal: table + inline badge only
-      'rpt-table':         'width:100%;border-collapse:collapse;margin:8px 0;font-size:11px;',
-      'rpt-badge':         'display:inline-block;font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;text-transform:uppercase;letter-spacing:.3px;border:1px solid #999;color:#333;',
+      'rpt-table':         'width:100%;border-collapse:collapse;margin:10px 0;font-size:11.5px;box-shadow:0 0 0 1px #e0e0e0;border-radius:8px;overflow:hidden;',
+      'rpt-badge':         'display:inline-flex;align-items:center;gap:5px;font-size:10px;font-weight:600;padding:2px 8px;border-radius:100px;text-transform:uppercase;letter-spacing:.3px;background:#eee;color:#666;',
       'rpt-section':       'margin:10px 0;padding:8px 10px;background:#fafafa;border:1px solid #ddd;border-left:3px solid #888;border-radius:0 6px 6px 0;font-size:11.5px;color:#111;',
       'rpt-divider':       'display:flex;align-items:center;gap:8px;margin:10px 0 6px;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:#888;',
       'rpt-radar':         'margin:8px 0;padding:8px 6px 4px;background:#fff;border:1px solid #d0d5dd;border-radius:4px;',
@@ -548,10 +493,10 @@ function makePdfBtn(getSourceEl) {
         if (styleMap[cls]) el.style.cssText += styleMap[cls];
       });
       // Muted severity accent — only critical/high get a colour cue, rest stay neutral
-      const sevColours = { critical: '#cc0000', high: '#e65c00' };
+      const sevColours = { critical: '#dc2626', high: '#d97706' };
       for (const [sev, col] of Object.entries(sevColours)) {
         if (el.classList.contains(sev) && el.classList.contains('rpt-badge')) {
-          el.style.cssText += `background:${col};color:#fff;border-color:${col};`;
+          el.style.cssText += `background:${col}1f;color:${col};`;
         }
       }
       el.removeAttribute('class');
@@ -728,157 +673,16 @@ async function withPage(btnId, fn, reader = readCurrentPage) {
   }
 }
 
-// ── TokenSaving: single combined badge (routing + savings) + dashboard link ─────
-// One merged element instead of two separate badges — was crowding the config bar. Runs
-// independently of autoFillFromConfig()'s url/key cache gate — the whole point is to surface the
-// Headroom/TokenSaving disabled in Ollama-only mode
-/*
-// current /config value even when a stale chrome.storage.session value is what the extension is
-// actually using (see: the Headroom docker-internal-hostname bug). Clicking the badge toggles
-// routing via serve.py's /headroom/toggle, which persists to .env and always hands back a
-// browser-reachable gateway_url (never the Docker-internal address).
-(function initTokenSaving() {
-  const badge = el('routing-badge');
-  const dashboardBtn = el('dashboard-token');
-  const dot = el('routing-dot'); // small at-a-glance indicator on the Admin button itself,
-                                  // since the routing badge now lives inside a closed menu
-  if (!badge) return;
-
-  let viaHeadroom        = false;
-  let headroomConfigured = false;
-  let busyToggling       = false;
-  let dashboardUrl       = null;
-  let savingsPct         = null;
-  let savingsDetail      = ''; // e.g. "— 370.6K tokens saved lifetime over 52 requests."
-
-  const fmtTokens = n =>
-    n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` :
-    n >= 1e3 ? `${(n / 1e3).toFixed(1)}K` : String(n);
-
-  // Single source of truth for badge text/title — refreshSavings() must never mutate
-  // badge.title directly, or the next render() call (from either refresh function) silently
-  // discards it, since render() always does a full overwrite, not an append.
-  function render() {
-    const pctSuffix = viaHeadroom && typeof savingsPct === 'number' ? ` · ${savingsPct}%` : '';
-    if (viaHeadroom) {
-      badge.textContent = `🔀 TokenSaving${pctSuffix}`;
-      badge.title = `Chat requests are routed through the local TokenSaving compression proxy. Click to switch back to direct. ${savingsDetail}`;
-    } else {
-      badge.textContent = '🔀 direct';
-      badge.title = (headroomConfigured
-        ? 'Chat requests go straight to the AI gateway. Click to route through TokenSaving instead.'
-        : 'Chat requests go straight to the AI gateway. TokenSaving is not configured (set HEADROOM_URL in .env) — click for details.'
-      ) + ` ${savingsDetail}`;
-    }
-    badge.style.display = '';
-
-    if (dot) {
-      dot.classList.toggle('active', viaHeadroom);
-      dot.title = viaHeadroom ? `via TokenSaving${pctSuffix}` : 'direct to AI gateway';
-    }
-  }
-
-  async function refreshRouting() {
-    try {
-      const res = await fetch(BASE_URL + '/config');
-      if (!res.ok) return;
-      const cfg = await res.json();
-      viaHeadroom        = !!cfg.via_headroom;
-      headroomConfigured = !!cfg.headroom_configured;
-      render();
-    } catch { /* serve.py unreachable — leave badge as last-known state */ }
-  }
-
-  async function refreshSavings() {
-    try {
-      const res  = await fetch(BASE_URL + '/headroom/stats');
-      const data = res.ok ? await res.json() : { available: false };
-      if (!data.available) { dashboardUrl = null; savingsPct = null; savingsDetail = ''; return; }
-      dashboardUrl  = data.dashboard_url;
-      savingsPct    = typeof data.savings_percent === 'number' ? data.savings_percent : null;
-      savingsDetail = `— ${fmtTokens(data.tokens_saved)} tokens saved lifetime over ${data.requests} requests.`;
-      render();
-    } catch { /* offline — leave last-known state */ }
-  }
-
-  async function applyGatewayUrl(url) {
-    // Bypass autoFillFromConfig()'s "only fill if empty" guard — this is an explicit
-    // user action and must take effect on the very next request, not just on next reload.
-    urlInput.value = url;
-    await chrome.storage.session.set({ bf_url: url });
-  }
-
-  badge.addEventListener('click', async () => {
-    if (busyToggling) return;
-    if (guardBusy()) return;
-
-    const target = !viaHeadroom;
-    if (target && !headroomConfigured) {
-      appendTurn('system', 'TokenSaving is not configured — set HEADROOM_URL (and HEADROOM_DASHBOARD_URL, if running in Docker) in .env, then restart serve.py.');
-      return;
-    }
-    const confirmed = confirm(
-      target
-        ? 'Switch chat requests to the local TokenSaving compression proxy?'
-        : 'Switch chat requests back to going direct to the AI gateway?'
-    );
-    if (!confirmed) return;
-
-    busyToggling = true;
-    try {
-      const res = await fetch(BASE_URL + '/headroom/toggle', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ enable: target }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-
-      viaHeadroom = !!data.via_headroom;
-      await applyGatewayUrl(data.gateway_url);
-      render();
-      setStatus(viaHeadroom ? 'routing: via TokenSaving' : 'routing: direct to gateway', 'ok');
-    } catch (e) {
-      appendTurn('system', `Failed to switch routing: ${e.message}`);
-    } finally {
-      busyToggling = false;
-    }
-  });
-
-  if (dashboardBtn) {
-    dashboardBtn.addEventListener('click', () => {
-      if (dashboardUrl) {
-        chrome.tabs.create({ url: dashboardUrl });
-      } else {
-        appendTurn('system', 'TokenSaving not configured — set HEADROOM_URL in .env to enable the token-savings dashboard.');
-      }
-    });
-  }
-
-  function refresh() {
-    refreshRouting();
-    refreshSavings();
-  }
-  refresh();
-  setInterval(refresh, 60 * 1000);
-})();
-*/
-
 el('read-page').addEventListener('click', () => withPage('read-page', async page => {
   if (guardBusy()) return;
   if (!page.text) {
-    appendTurn('system', 'No text selected — select some text on the page, then click Translate.');
+    appendTurn('system',
+      'No text selected — select some text on the page, then click Explain. ' +
+      '(In a PDF, use right-click → "Ask AI about selection" instead.)');
     setStatus('no selection', 'err');
     return;
   }
-  history.push({ role: 'user', content:
-    `[Selected text from "${page.title}"]\n\n${page.text}\n\n` +
-    'If the text above is not already in English, translate it to English. ' +
-    'If it is already in English, say so briefly instead of translating. ' +
-    'Reply with just the translation (or that brief note) — no extra commentary.' });
-  appendTurn('system', `🌐 Selected text from "${page.title}"`);
-  el('read-page').classList.add('active');
-  await send(true); // user turn already pushed above; silent avoids re-appending it
+  openSelectionInChat(page.text);
 }, readSelectedText));
 
 el('tldr').addEventListener('click', () => withPage('tldr', async page => {
@@ -896,56 +700,42 @@ el('tldr').addEventListener('click', () => withPage('tldr', async page => {
     'actually on the page — never omit this, never invent a URL. ' +
     'Start directly with the first bullet or heading — no preamble, no "Here is the summary" or similar opener, ' +
     'not even if you look something up mid-answer and resume afterward.' });
-  appendTurn('system', `📄 TL;DR — "${page.title}"`);
+  appendTurn('system', `TL;DR — "${page.title}"`);
   el('read-page').classList.add('active');
   await send(true); // user turn already pushed above; silent avoids re-appending it
 }));
 
-// ── SSE stream parser ─────────────────────────────────────────────────────
-async function readStream(res, bubble, cursor) {
-  const reader = res.body.getReader();
-  const dec    = new TextDecoder();
-  let buf = '', out = '', inputTk = 0, outputTk = 0, searchMarker = null;
+// Defensive no-op for the current models (Qwen2.5-Instruct/Coder don't emit these) —
+// kept in case a future reasoning-style model is added; strips <think>...</think> blocks
+// from both the rendered bubble and stored history, including a still-open trailing
+// <think> so partial reasoning never flashes on screen mid-stream.
+function stripThink(s) {
+  return s.replace(/<think>[\s\S]*?<\/think>/gi, '').replace(/<think>[\s\S]*$/i, '').replace(/^\s+/, '');
+}
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const lines = buf.split('\n');
-    buf = lines.pop();
+// ── Stream consumer (WebLLM's AsyncGenerator of OpenAI-shaped chunks) ─────
+// funFact: removed (both panes) the moment the first real token arrives, so it never
+// overlaps rendered output.
+async function readStream(chunks, bubble, cursor, funFact) {
+  let raw = '', out = '', inputTk = 0, outputTk = 0;
 
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      const raw = line.slice(5).trim();
-      if (raw === '[DONE]') break;
-      let ev; try { ev = JSON.parse(raw); } catch { continue; }
-
-      if (ev.type === 'message_start')
-        inputTk = ev.message?.usage?.input_tokens ?? 0;
-      if (ev.type === 'message_delta')
-        outputTk = ev.usage?.output_tokens ?? outputTk;
-
-      // Show [searching…] while the server-side web_search tool runs
-      if (ev.type === 'content_block_start' && ev.content_block?.type === 'server_tool_use'
-          && ev.content_block?.name === 'web_search') {
-        searchMarker = Object.assign(document.createElement('span'), {
-          className: 'search-marker', textContent: ' [searching…] ',
-        });
-        bubble.appendChild(searchMarker);
-        bubble.appendChild(cursor);
-        setStatus('searching…', 'busy');
+  for await (const chunk of chunks) {
+    if (chunk.usage) {
+      inputTk  = chunk.usage.prompt_tokens ?? inputTk;
+      outputTk = chunk.usage.completion_tokens ?? outputTk;
+    }
+    const delta = chunk.choices?.[0]?.delta?.content;
+    if (delta) {
+      if (funFact) {
+        bubble._allBody?.querySelector('.fun-fact')?.remove();
+        funFact.remove();
+        funFact = null;
       }
-      if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_result') {
-        searchMarker?.remove(); searchMarker = null;
-        setStatus('streaming…', 'busy');
-      }
-      if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') {
-        searchMarker?.remove(); searchMarker = null;
-        out += ev.delta.text;
-        setRendered(bubble, renderMarkdown(out));
-        bubble.appendChild(cursor);
-        scrollLog();
-      }
+      raw += delta;
+      out = stripThink(raw);
+      setRendered(bubble, renderMarkdown(out));
+      bubble.appendChild(cursor);
+      scrollLog();
     }
   }
   return { out, inputTk, outputTk };
@@ -973,11 +763,6 @@ function guardBusy() {
 async function send(silent = false) {
   if (busy) return;
 
-  const baseUrl = urlInput.value.trim().replace(/\/+$/, '');
-  const key     = keyInput.value.trim();
-  if (!baseUrl) { appendTurn('system', 'No endpoint URL — enter the gateway base URL above.'); return; }
-  if (!key)     { appendTurn('system', 'No API key — enter your key above.'); return; }
-
   if (!silent) {
     const text = el('prompt').value.trim();
     if (!text) return;
@@ -989,28 +774,27 @@ async function send(silent = false) {
 
   const bubble = appendTurn('ai');
   const cursor = Object.assign(document.createElement('span'), { className: 'cursor' });
-  bubble.appendChild(cursor);
+  const funFact = makeFunFact();
+  bubble.append(funFact, cursor);
+  if (bubble._allBody) bubble._allBody.appendChild(funFact.cloneNode(true));
   busy = true;
   el('send').disabled = true;
 
-  const gw      = el('gateway').value || 'bifrost';
-  const profile = GATEWAYS[gw] || GATEWAYS.bifrost;
-  const headers = profile.headers(key, gw === 'helicone' ? key2Input.value.trim() : undefined);
-
   try {
-    setStatus('streaming…', 'busy');
-    const res = await fetch(`${baseUrl}/v1/messages`, {
-      method: 'POST', headers,
-      body: JSON.stringify({
-        model: el('model').value, max_tokens: MAX_TOKENS,
-        stream: true, system: SYSTEM_PROMPT, messages: history,
-        tools: [WEB_SEARCH_TOOL],
-      }),
-    });
-    if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
+    setStatus('loading model…', 'busy');
+    const engine = await getEngine(p => setStatus(p.text || 'loading model…', 'busy'));
 
-    const { out, inputTk, outputTk } = await readStream(res, bubble, cursor);
+    setStatus('streaming…', 'busy');
+    const chunks = await engine.chat.completions.create({
+      model: webllmModel, max_tokens: MAX_TOKENS, temperature: CHAT_TEMPERATURE, stream: true,
+      stream_options: { include_usage: true },
+      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
+    });
+
+    const { out, inputTk, outputTk } = await readStream(chunks, bubble, cursor, funFact);
     cursor.remove();
+    bubble._allBody?.querySelector('.fun-fact')?.remove();
+    funFact.remove();
     if (out) {
       const node = document.createElement('span');
       setRendered(node, renderMarkdown(out));
@@ -1024,11 +808,116 @@ async function send(silent = false) {
     history.push({ role: 'assistant', content: out });
     setStatus('ok', 'ok');
     el('token-info').textContent = `in:${inputTk} out:${outputTk}`;
+    return bubble;
+  } catch (err) {
+    invalidateEngineOnGpuError(err);
+    cursor.remove();
+    bubble.textContent = `Error: ${err.message}`;
+    history.pop();
+    setStatus('error', 'err');
+  } finally {
+    busy = false;
+    el('send').disabled = false;
+    scrollLog();
+  }
+}
+
+// Shared batching for opt-in AI analysis: processes `items` in chunks of `batchSize`,
+// appending a "Continue analysis" button to the AI's reply so the next chunk only runs
+// if the user asks for it — reports on large result sets (CVE hosts, LQL rows) would
+// otherwise burn one huge, slow generation the user never asked to wait for.
+//
+// `useServerSide: true` (CVE/Attack Surface only) sends the prompt to
+// serve.py's /analysis/generate instead of running it on-device — pinned server-side to
+// Claude Haiku-4.5 via Bifrost, same upstream as /mcp/investigate and /mcp/forensic, so
+// this report reads identically regardless of which on-device model the user has picked
+// in the Admin menu. LQL analysis stays on-device (useServerSide omitted/false there).
+async function _runBatchedAnalysis(items, batchSize, buildPrompt, describeTurn, useServerSide = false) {
+  let cursor = 0;
+  const total = items.length;
+
+  async function runBatch() {
+    if (guardBusy()) return false;
+    const batch = items.slice(cursor, cursor + batchSize);
+    const batchNum = Math.floor(cursor / batchSize) + 1;
+    const totalBatches = Math.ceil(total / batchSize);
+    const prompt = buildPrompt(batch, cursor, total);
+    history.push({ role: 'user', content: prompt });
+    appendTurn('user', describeTurn(batch, cursor, total, batchNum, totalBatches));
+    const bubble = useServerSide ? await _sendServerSideAnalysis(prompt) : await send(true);
+    cursor += batch.length;
+    if (!bubble) return false; // fetch/API error already rendered by the send helper
+    if (cursor < total) {
+      const btn = document.createElement('button');
+      btn.className   = 'rc-copy-btn rc-analyse-btn';
+      btn.style.cssText = 'margin-top:6px;display:block;';
+      btn.textContent = `▶ Continue analysis (${total - cursor} more)`;
+      btn.addEventListener('click', () => {
+        btn.disabled    = true;
+        btn.textContent = '⏳ analysing…';
+        runBatch();
+      }, { once: true });
+      bubble.appendChild(btn);
+      if (bubble._allBody) bubble._allBody.appendChild(btn.cloneNode(true));
+    }
+    return true;
+  }
+
+  return runBatch();
+}
+
+// Non-streaming counterpart to send() for server-side (Bifrost/Claude Haiku-4.5) report
+// generation — same bubble/history/status bookkeeping as send(), but a single fetch to
+// serve.py's /analysis/generate instead of an on-device engine.chat.completions.create call.
+async function _sendServerSideAnalysis(prompt) {
+  if (busy) return null;
+  const bubble = appendTurn('ai');
+  const cursor = Object.assign(document.createElement('span'), { className: 'cursor' });
+  const funFact = makeFunFact();
+  bubble.append(funFact, cursor);
+  if (bubble._allBody) bubble._allBody.appendChild(funFact.cloneNode(true));
+  busy = true;
+  el('send').disabled = true;
+
+  try {
+    setStatus('analysing (Bifrost, Haiku-4.5)…', 'busy');
+    const res = await fetch(BASE_URL + '/analysis/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || `API ${res.status}`);
+    const out = data.text || '';
+
+    cursor.remove();
+    bubble._allBody?.querySelector('.fun-fact')?.remove();
+    funFact.remove();
+    if (out) {
+      // Unlike send()'s streaming path (readStream renders into `bubble` incrementally as
+      // chunks arrive, so `bubble` already shows content by the time this block runs), this is
+      // a single non-streaming response — nothing has been rendered into the DOM yet. The
+      // rendered node must actually be appended to `bubble`, not just built and discarded.
+      const node = document.createElement('span');
+      setRendered(node, renderMarkdown(out));
+      bubble.appendChild(node);
+      bubble.appendChild(makeCopyBtn(out));
+      bubble.appendChild(makePdfBtn(node));
+      if (bubble._allBody) {
+        bubble._allBody.appendChild(node.cloneNode(true));
+        bubble._allBody.appendChild(makeCopyBtn(out));
+        bubble._allBody.appendChild(makePdfBtn(node));
+      }
+    }
+    history.push({ role: 'assistant', content: out });
+    setStatus('ok', 'ok');
+    return bubble;
   } catch (err) {
     cursor.remove();
     bubble.textContent = `Error: ${err.message}`;
     history.pop();
     setStatus('error', 'err');
+    return null;
   } finally {
     busy = false;
     el('send').disabled = false;
@@ -1072,10 +961,8 @@ async function send(silent = false) {
   });
 })();
 
-// ── Admin dropdown toggle (gateway / model / TokenSaving / community) ──────────
-// Same open/close pattern as the FortiCNAPP menu, except clicking inside only closes the
-// menu for actual action items (.admin-item) — the gateway/model <select> elements need
-// clicks to reach their native dropdown without the whole Admin menu closing underneath them.
+// ── Admin dropdown toggle (on-device model info) ──────────────────────────
+// Same open/close pattern as the FortiCNAPP menu.
 (function () {
   const btn  = el('admin-btn');
   const menu = el('admin-menu');
@@ -1094,7 +981,8 @@ async function send(silent = false) {
   });
 
   menu.addEventListener('click', e => {
-    if (!e.target.closest('.admin-item')) return;
+    if (['model-select', 'gateway-models-fetch', 'gateway-model-select'].includes(e.target.id)
+        || !e.target.closest('.admin-item')) return;
     menu.classList.remove('open');
     btn.classList.remove('open');
   });
@@ -1103,6 +991,69 @@ async function send(silent = false) {
     if (!btn.contains(e.target) && !menu.contains(e.target)) {
       menu.classList.remove('open');
       btn.classList.remove('open');
+    }
+  });
+})();
+
+// ── Model picker (Qwen2.5-3B-Instruct default, 7B-Instruct/Coder-7B alternatives) ──
+(function () {
+  const sel = el('model-select');
+  if (!sel) return;
+  for (const [id, label] of Object.entries(WEBLLM_MODELS)) {
+    sel.appendChild(new Option(label, id, false, id === webllmModel));
+  }
+  sel.addEventListener('change', () => {
+    webllmModel = WEBLLM_MODELS[sel.value] ? sel.value : DEFAULT_WEBLLM_MODEL;
+    localStorage.setItem('webllm_model', webllmModel);
+  });
+})();
+
+// ── Server-side (Bifrost) model picker ─────────────────────────────────────
+// Fetches the gateway's live model catalog (GET /gateway/models, server-side so
+// the API key never touches the browser) instead of hardcoding model ids that
+// drift out of sync with what Bifrost actually has configured. Selecting one
+// POSTs /model, which persists it as ANTHROPIC_DEFAULT_MODEL for /lql/generate
+// (the only server-side caller that honors this — /mcp/investigate and
+// /mcp/forensic are pinned to Claude regardless, see serve.py).
+(function () {
+  const fetchBtn = el('gateway-models-fetch');
+  const sel      = el('gateway-model-select');
+  const statusEl = el('gateway-models-status');
+  if (!fetchBtn || !sel) return;
+
+  fetchBtn.addEventListener('click', async () => {
+    fetchBtn.disabled = true;
+    statusEl.textContent = 'fetching…';
+    try {
+      const res = await fetch(BASE_URL + '/gateway/models');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      sel.innerHTML = '';
+      (data.models || []).forEach(id => sel.appendChild(new Option(id, id)));
+      sel.style.display = 'block';
+      fetchBtn.style.display = 'none';
+      statusEl.textContent = `${data.models.length} models`;
+    } catch (e) {
+      statusEl.textContent = `✗ ${e.message}`;
+    } finally {
+      fetchBtn.disabled = false;
+    }
+  });
+
+  sel.addEventListener('change', async () => {
+    const model = sel.value;
+    if (!model) return;
+    statusEl.textContent = 'saving…';
+    try {
+      const res = await fetch(BASE_URL + '/model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      statusEl.textContent = `✓ ${model}`;
+    } catch (e) {
+      statusEl.textContent = `✗ ${e.message}`;
     }
   });
 })();
@@ -1235,6 +1186,18 @@ function categorizeGithubFile(path) {
   return 'Other';
 }
 
+// Per-extension icon for the GitHub repo card's file tree — purely cosmetic.
+const EXT_ICONS = {
+  '.py': '🐍', '.go': '🐹', '.java': '☕', '.js': '📜', '.jsx': '📜', '.mjs': '📜', '.cjs': '📜',
+  '.ts': '📘', '.tsx': '📘', '.php': '🐘', '.rb': '💎', '.rs': '🦀', '.tf': '🧱', '.tfvars': '🧱',
+  '.yaml': '⚙️', '.yml': '⚙️', '.json': '🔩', '.lock': '🔒',
+};
+function extIcon(name) {
+  if (name === 'Dockerfile' || name.startsWith('Dockerfile.')) return '🐳';
+  const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+  return EXT_ICONS[ext] || '📄';
+}
+
 function githubRepoFromUrl(url) {
   // Matches: github.com/owner/repo[/tree/branch/...]
   const m = url.match(/github\.com\/([^/]+)\/([^/?#]+)(?:\/tree\/([^/?#]+))?/);
@@ -1321,7 +1284,10 @@ async function fetchGithubRepoFiles(owner, repo, branchHint) {
   return { files, owner, repo, branch };
 }
 
-function appendResultCard(icon, title, contentEl) {
+// opts.onAnalyse: if given, a "Generate AI Analysis" button is added to the card footer.
+// AI analysis is opt-in — no report auto-triggers a model call anymore; the raw table/data
+// always renders on its own, and the user decides whether to spend the extra generation time.
+function appendResultCard(icon, title, contentEl, opts = {}) {
   const buildCopyBtn = (body) => {
     const btn = document.createElement('button');
     btn.className   = 'rc-copy-btn';
@@ -1357,7 +1323,35 @@ function appendResultCard(icon, title, contentEl) {
     return btn;
   };
 
-  const buildCard = (body) => {
+  const buildAnalyseBtn = () => {
+    if (!opts.onAnalyse) return null;
+    const btn = document.createElement('button');
+    btn.className   = 'rc-copy-btn rc-analyse-btn';
+    btn.textContent = 'Generate AI Analysis';
+    btn.title       = 'Send this data to the on-device model for a written report (not run automatically)';
+    btn.addEventListener('click', async () => {
+      btn.disabled    = true;
+      btn.textContent = '⏳ analysing…';
+      try {
+        const ok = await opts.onAnalyse();
+        // _runBatchedAnalysis resolves to a falsy bubble on a caught fetch/API error (the
+        // error itself is already rendered as an AI turn by _sendServerSideAnalysis/send) —
+        // still reset the button so it doesn't stay stuck on "analysing…" for a failed run.
+        btn.textContent = ok === false ? 'Generate AI Analysis' : '✓ Analysed';
+        btn.disabled    = ok === false ? false : true;
+      } catch (err) {
+        // A thrown error here (e.g. a malformed prompt build) must not leave the button
+        // stuck on "analysing…" forever with no report and no feedback — surface it and
+        // re-enable so the user can retry instead of reloading the extension.
+        btn.disabled    = false;
+        btn.textContent = 'Generate AI Analysis';
+        appendTurn('system', `AI analysis failed: ${err.message || err}`);
+      }
+    });
+    return btn;
+  };
+
+  const buildCard = (body, analyseBtn) => {
     const card = document.createElement('div');
     card.className = 'result-card';
     const hdr = document.createElement('div');
@@ -1370,45 +1364,51 @@ function appendResultCard(icon, title, contentEl) {
       actions.appendChild(csvBtn);
       hdr.appendChild(actions);
     }
-    // Footer with copy button always visible at the bottom of the card
+    // Footer with copy button (and, when opted in, the AI analysis trigger) always visible
     const footer = document.createElement('div');
     footer.className = 'rc-footer';
+    if (analyseBtn) footer.appendChild(analyseBtn);
     footer.appendChild(buildCopyBtn(body));
     card.append(hdr, body, footer);
     return card;
   };
 
-  el('log-latest').appendChild(buildCard(contentEl));
-  el('log-all').appendChild(buildCard(contentEl.cloneNode(true)));
+  el('log-latest').appendChild(buildCard(contentEl, buildAnalyseBtn()));
+  el('log-all').appendChild(buildCard(contentEl.cloneNode(true), buildAnalyseBtn()));
   scrollLog();
 }
 
 function appendGithubCard(owner, repo, branch, files) {
   const repoUrl = `https://github.com/${owner}/${repo}`;
 
-  // Group a list of files by directory (unchanged row/chip rendering, just
-  // reused per-category below instead of once for the whole file list).
+  // Group a list of files by directory, rendered as a mini tree: one header
+  // row per directory (folder icon + path), files listed vertically underneath —
+  // easier to scan than the old wrapped inline-chip layout.
   const buildDirRows = (fileList) => {
     const groups = {};
     fileList.forEach(f => {
       const parts = (f.path || f.filename || '').split('/');
-      const dir   = parts.length > 1 ? parts.slice(0, -1).join('/') : '(root)';
+      const dir   = parts.length > 1 ? parts.slice(0, -1).join('/') : '';
       (groups[dir] = groups[dir] || []).push(parts[parts.length - 1]);
     });
     return Object.entries(groups).map(([dir, fnames]) => {
-      const dirLabel = dir === '(root)' ? '' : `<span class="gh-dir">${esc(dir)}/</span>`;
-      const fileChips = fnames.map(n => `<span class="gh-file">${esc(n)}</span>`).join('');
-      return `<div class="gh-row">${dirLabel}${fileChips}</div>`;
+      const dirHeader = dir
+        ? `<div class="gh-dir"><span class="gh-dir-icon">📁</span>${esc(dir)}/</div>`
+        : '';
+      const fileRows = fnames.map(n =>
+        `<div class="gh-file"><span class="gh-file-icon">${extIcon(n)}</span>${esc(n)}</div>`
+      ).join('');
+      return `<div class="gh-dirgroup">${dirHeader}<div class="gh-filelist">${fileRows}</div></div>`;
     }).join('');
   };
 
   // Categorize into SAST | IaC | SCA | Other before rendering — same buckets
   // the CodeSec scan itself draws from (see categorizeGithubFile).
   const CATEGORY_META = {
-    SAST:  { label: '🛡 SAST',  cls: 'sast'  },
-    IaC:   { label: '🏗 IaC',   cls: 'iac'   },
-    SCA:   { label: '📦 SCA',   cls: 'sca'   },
-    Other: { label: '📄 Other', cls: 'other' },
+    SAST:  { label: 'SAST',  cls: 'sast',  icon: '🛡️' },
+    IaC:   { label: 'IaC',   cls: 'iac',   icon: '🏗️' },
+    SCA:   { label: 'SCA',   cls: 'sca',   icon: '📦' },
+    Other: { label: 'Other', cls: 'other', icon: '📄' },
   };
   const byCategory = { SAST: [], IaC: [], SCA: [], Other: [] };
   files.forEach(f => byCategory[categorizeGithubFile(f.path || f.filename || '')].push(f));
@@ -1417,10 +1417,13 @@ function appendGithubCard(owner, repo, branch, files) {
     .filter(cat => byCategory[cat].length)
     .map(cat => {
       const meta = CATEGORY_META[cat];
-      return `<div class="gh-cat gh-cat-${meta.cls}">` +
-        `<div class="gh-cat-label">${meta.label}<span class="gh-cat-count">${byCategory[cat].length}</span></div>` +
-        buildDirRows(byCategory[cat]) +
-      `</div>`;
+      return `<details class="gh-cat gh-cat-${meta.cls}" open>` +
+        `<summary class="gh-cat-label">` +
+          `<span class="gh-cat-icon">${meta.icon}</span>${meta.label}` +
+          `<span class="gh-cat-count">${byCategory[cat].length}</span>` +
+        `</summary>` +
+        `<div class="gh-cat-body">${buildDirRows(byCategory[cat])}</div>` +
+      `</details>`;
     }).join('');
 
   const card = document.createElement('div');
@@ -1504,7 +1507,7 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
   if (mode === 'sbom') {
     if (data.error) {
       body.innerHTML = `<div class="cs-empty" style="color:var(--err)">${data.error}</div>`;
-      appendResultCard('📦', 'FortiCNAPP SBOM', body);
+      appendResultCard('', 'FortiCNAPP SBOM', body);
       return;
     }
 
@@ -1530,7 +1533,7 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
       });
       const copyBtn = document.createElement('button');
       copyBtn.className = 'cs-sbom-btn';
-      copyBtn.textContent = '📋 Copy';
+      copyBtn.textContent = 'Copy';
       copyBtn.addEventListener('click', () => navigator.clipboard.writeText(data._raw));
       actions.append(dlBtn, copyBtn);
       body.appendChild(actions);
@@ -1538,7 +1541,7 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
       pre.style.cssText = 'font-size:10px;overflow-x:auto;max-height:200px;background:var(--surface3);padding:6px;border-radius:4px;margin-top:4px;';
       pre.textContent = data._raw.slice(0, 3000) + (data._raw.length > 3000 ? '\n…(truncated)' : '');
       body.appendChild(pre);
-      appendResultCard('📦', 'FortiCNAPP SBOM', body);
+      appendResultCard('', 'FortiCNAPP SBOM', body);
       return;
     }
 
@@ -1561,7 +1564,7 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
     });
     const copyBtn = document.createElement('button');
     copyBtn.className = 'cs-sbom-btn';
-    copyBtn.textContent = '📋 Copy JSON';
+    copyBtn.textContent = 'Copy JSON';
     copyBtn.addEventListener('click', () => navigator.clipboard.writeText(JSON.stringify(data, null, 2)));
     actions.append(dlBtn, copyBtn);
     body.appendChild(actions);
@@ -1571,7 +1574,7 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
       empty.className = 'cs-empty';
       empty.textContent = 'No packages detected in page code snippets.';
       body.appendChild(empty);
-      appendResultCard('📦', 'FortiCNAPP SBOM', body);
+      appendResultCard('', 'FortiCNAPP SBOM', body);
       return;
     }
     components.slice(0, 50).forEach(c => {
@@ -1591,7 +1594,7 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
       more.textContent = `… and ${components.length - 50} more components`;
       body.appendChild(more);
     }
-    appendResultCard('📦', 'FortiCNAPP SBOM', body);
+    appendResultCard('', 'FortiCNAPP SBOM', body);
     return;
   }
 
@@ -1608,7 +1611,7 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
     ok.className = 'cs-empty';
     ok.textContent = '✓ No vulnerabilities, weaknesses, secrets, or IaC misconfigurations detected.';
     body.appendChild(ok);
-    appendResultCard('🛡', 'FortiCNAPP CodeSec', body);
+    appendResultCard('', 'FortiCNAPP CodeSec', body);
     return;
   }
 
@@ -1655,8 +1658,8 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
       // Fix button — send finding + file content to chat
       const fixBtn = document.createElement('button');
       fixBtn.className = 'cs-fix-btn';
-      fixBtn.textContent = '✦ Fix';
-      fixBtn.title = 'Ask Claude to propose a fix for this finding';
+      fixBtn.textContent = 'Fix';
+      fixBtn.title = 'Ask FortiAIScout to propose a fix for this finding';
       fixBtn.addEventListener('click', () => {
         const base      = (f.file || '').split('/').pop();
         const fileEntry = scannedFiles?.find(sf =>
@@ -1707,7 +1710,7 @@ function renderCodeSecResults(data, mode, ghCtx, scannedFiles) {
     warn.textContent = `Scanner warning: ${data.stderr}`;
     body.appendChild(warn);
   }
-  appendResultCard('🛡', 'FortiCNAPP CodeSec', body);
+  appendResultCard('', 'FortiCNAPP CodeSec', body);
 }
 
 async function runCodeSec(mode) {
@@ -1882,7 +1885,7 @@ async function runComplianceReport() {
       statusEl.className   = 'ok';
       setStatus('PDF ready', 'ok');
       appendTurn('system',
-        `📋 Compliance PDF: ${fw.name} — opened in a new tab. Select any text in it and ` +
+        `Compliance PDF: ${fw.name} — opened in a new tab. Select any text in it and ` +
         `right-click → "Ask AI about selection" to bring it into this chat.`);
     } else {
       const d = await res.json();
@@ -1904,9 +1907,9 @@ el('comp-generate').addEventListener('click', runComplianceReport);
 
 function openCvePanel(cveId) {
   el('cve-input').value = cveId;
-  ['codesec-panel', 'compliance-panel', 'lql-panel'].forEach(id =>
-    el(id).classList.remove('open'));
-  el('cve-panel').classList.add('open');
+  ['codesec-panel', 'compliance-panel'].forEach(id => el(id).classList.remove('open'));
+  el('lql-panel').classList.add('open');
+  switchLqlTab('cve');
   runCveSearch();
 }
 
@@ -1936,18 +1939,29 @@ chrome.storage.session.get('pendingCve', ({ pendingCve }) => {
 const SELECTION_MAX_CHARS = 4000;
 
 function openSelectionInChat(text) {
-  ['codesec-panel', 'compliance-panel', 'lql-panel', 'cve-panel'].forEach(id =>
+  ['codesec-panel', 'compliance-panel', 'lql-panel'].forEach(id =>
     el(id).classList.remove('open'));
   const trimmed = text.trim();
+  if (!trimmed) return;
   const clipped = trimmed.length > SELECTION_MAX_CHARS
     ? trimmed.slice(0, SELECTION_MAX_CHARS) + '\n[…truncated]'
     : trimmed;
   const quoted = clipped.split('\n').map(l => `> ${l}`).join('\n');
-  el('prompt').value = `${quoted}\n\n`;
-  resizePrompt();
-  el('prompt').focus();
-  el('prompt').setSelectionRange(el('prompt').value.length, el('prompt').value.length);
-  setStatus('selection loaded — ask your question', 'ok');
+
+  // If a request is already in flight, fall back to just pre-filling the box —
+  // can't safely push a new turn and call send() mid-stream.
+  if (busy) {
+    el('prompt').value = `${quoted}\n\n`;
+    resizePrompt();
+    el('prompt').focus();
+    el('prompt').setSelectionRange(el('prompt').value.length, el('prompt').value.length);
+    setStatus('selection loaded — busy, ask when ready', 'err');
+    return;
+  }
+
+  history.push({ role: 'user', content: `${quoted}\n\nExplain the above selected text.` });
+  appendTurn('user', quoted);
+  send(true); // user turn already pushed above; silent avoids re-appending it
 }
 
 chrome.runtime.onMessage.addListener(msg => {
@@ -1960,37 +1974,15 @@ chrome.storage.session.get('pendingSelection', ({ pendingSelection }) => {
   openSelectionInChat(pendingSelection);
 });
 
-// ── FortiCNAPP CVE Attack Surface ────────────────────────────────────────────
+// ── FortiCNAPP Attack Surface (CVE) — tab inside the Risk Hunting drawer ────
 
 let _lastCveData = null;
-
-el('cve-btn').addEventListener('click', () => {
-  const panel  = el('cve-panel');
-  const isOpen = panel.classList.contains('open');
-  panel.classList.toggle('open', !isOpen);
-  el('codesec-panel').classList.remove('open');
-  el('compliance-panel').classList.remove('open');
-  el('lql-panel').classList.remove('open');
-  if (!isOpen) { startNewSession('Unified Attack Threat Surface'); el('cve-input').focus(); }
-});
-
-el('cve-close').addEventListener('click', () => el('cve-panel').classList.remove('open'));
 
 el('cve-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') runCveSearch();
 });
 
 el('cve-search').addEventListener('click', runCveSearch);
-
-el('cve-analyse').addEventListener('click', () => {
-  if (!_lastCveData) return;
-  if (guardBusy()) return;
-  el('cve-panel').classList.remove('open');
-  const prompt = buildCveAnalysisPrompt(_lastCveData, _lastCveData.fgOutbreaks || []);
-  history.push({ role: 'user', content: prompt });
-  appendTurn('user', `Analyse attack surface for ${_lastCveData.cveId}`);
-  send(true);
-});
 
 // ── Regulatory context: map cloud regions → applicable compliance obligations ──
 function _regulatoryContext(regions = []) {
@@ -2104,7 +2096,7 @@ function _regulatoryContext(regions = []) {
 }
 
 // Shared minimalist template for FortiCNAPP Risk Hunting (LQL) and
-// Unified Attack Threat Surface (CVE) reports. This OVERRIDES the system prompt's
+// Attack Surface (CVE) reports. This OVERRIDES the system prompt's
 // default Objective/Findings/Fix structure per its own precedence rule.
 const INCIDENT_REPORT_TEMPLATE = `Use EXACTLY this format — a single Markdown table, nothing else. No title, no status/severity
 line, no separate remediation section, no other headings or sections before or after the table
@@ -2132,6 +2124,28 @@ function buildReportInstructions() {
   return `${INCIDENT_REPORT_TEMPLATE}\n\nToday's date: ${today}`;
 }
 
+// Same Finding/Why/Remediate template as CVE analysis, applied to raw LQL rows
+// (both the saved-query "LQL" tab and the "LQL Builder"/Assisted Investigation tab).
+function buildLqlAnalysisPrompt(rows, label, batch, batchOffset, batchTotal) {
+  const data = batch || rows;
+  const keys = Object.keys(rows[0] || {});
+  const lines = [
+    `=== LQL RESULTS: ${label} ===`,
+    ``,
+    `Total matching rows: ${batchTotal || rows.length}`,
+    ``,
+  ];
+  data.forEach((r, i) => {
+    const fields = keys.map(k => `${k}: ${String(r[k] ?? '').slice(0, 300)}`).join(' | ');
+    lines.push(`${(batchOffset || 0) + i + 1}. ${fields}`);
+  });
+  if (batchTotal && batchTotal > data.length) {
+    lines.push(``, `(Analysing rows ${(batchOffset || 0) + 1}-${(batchOffset || 0) + data.length} of ${batchTotal} — one row per resource in THIS batch only, not the full set.)`);
+  }
+  lines.push(``, buildReportInstructions());
+  return lines.join('\n');
+}
+
 // Computed (not model-authored) risk profile chart prepended to the CVE report's table —
 // geometry is unreliable coming from an LLM, so we derive the 5 axes straight from the CVSS
 // vector / EPSS / exposure data and hand the model a ready-made ```radar block to embed verbatim.
@@ -2152,7 +2166,8 @@ function buildCveRadarBlock(d, intel) {
   return '```radar\n' + JSON.stringify(data) + '\n```';
 }
 
-function buildCveAnalysisPrompt(d, fgOutbreaks) {
+function buildCveAnalysisPrompt(d, fgOutbreaks, hostsBatch, batchOffset, batchTotal) {
+  const hosts = hostsBatch || d.hosts;
   const intel        = d.cveIntel || {};
   const fixVer       = d.hosts.find(h => h.fix_available)?.fixed_version || 'latest';
   const fgSearchUrl  = `https://www.fortiguard.com/search?q=${encodeURIComponent(d.cveId)}`;
@@ -2226,16 +2241,19 @@ function buildCveAnalysisPrompt(d, fgOutbreaks) {
     `  Fixable: ${d.fixable}`,
     ``,
   );
-  d.hosts.forEach((h, i) => {
+  hosts.forEach((h, i) => {
     const flags = [
       h.host_exposed      ? 'HOST-EXPOSED'      : '',
       h.container_exposed ? 'CONTAINER-EXPOSED' : '',
       h.fix_available     ? `fix→${h.fixed_version || fixVer}` : '',
     ].filter(Boolean).join(' ');
-    lines.push(`${i + 1}. ${h.hostname} [${h.severity}] csp:${h.csp || 'unknown'} instance:${h.instance_id || 'unknown'} type:${h.instance_type || ''} account:${h.account || 'unknown'} region:${h.region || ''} vpc:${h.vpc_id || ''} risk:${h.host_risk_score.toFixed(1)} ${flags}`);
+    lines.push(`${(batchOffset || 0) + i + 1}. ${h.hostname} [${h.severity}] csp:${h.csp || 'unknown'} instance:${h.instance_id || 'unknown'} type:${h.instance_type || ''} account:${h.account || 'unknown'} region:${h.region || ''} vpc:${h.vpc_id || ''} risk:${h.host_risk_score.toFixed(1)} ${flags}`);
     h.packages.forEach(p  => lines.push(`   pkg: ${p.name} ${p.version}`));
-    h.containers.forEach(c => lines.push(`   ctr: ${c.name}${c.internet_exposed ? ' 🌐 INTERNET-EXPOSED' : ''}`));
+    h.containers.forEach(c => lines.push(`   ctr: ${c.name}${c.internet_exposed ? ' INTERNET-EXPOSED' : ''}`));
   });
+  if (batchTotal && batchTotal > hosts.length) {
+    lines.push(``, `(Analysing hosts ${(batchOffset || 0) + 1}-${(batchOffset || 0) + hosts.length} of ${batchTotal} — one row per host in THIS batch only, not the full set.)`);
+  }
 
   const radarBlock = buildCveRadarBlock(d, intel);
 
@@ -2253,7 +2271,7 @@ function buildCveAnalysisPrompt(d, fgOutbreaks) {
     `- Next Steps to Remediate column: exact patch command for this host/package (e.g. apt-get install`,
     `  <pkg>=<version>, yum update, docker pull <image>:<tag>) — real package/version from the data.`,
   );
-  if (radarBlock) {
+  if (radarBlock && !batchOffset) {
     lines.push(
       `- The very first line of the whole answer must be this exact fenced block, byte-for-byte,`,
       `  unchanged (it is a pre-computed risk-profile chart — do not edit the JSON), followed directly`,
@@ -2363,7 +2381,7 @@ function buildThreatRadarHtml(cveId, intel, data) {
     // Internet exposed
     `<div style="background:#fff;border:1.5px solid ${expCount>0?'#cc0000':'#ccc'};border-radius:6px;padding:5px 10px;text-align:center;min-width:48px">` +
     `<div style="font-size:17px;font-weight:700;color:${expCount>0?'#cc0000':'#888'};line-height:1">${expCount}</div>` +
-    `<div style="font-size:8px;color:#888">🌐 exposed</div></div>` +
+    `<div style="font-size:8px;color:#888">exposed</div></div>` +
     // KEV badge tile
     (intel.kev?.inKev
       ? `<div style="background:#fef2f2;border:1.5px solid #cc0000;border-radius:6px;padding:5px 10px;text-align:center;min-width:48px">` +
@@ -2403,7 +2421,7 @@ function buildThreatRadarHtml(cveId, intel, data) {
   const rightPanel = `<div style="flex:1;min-width:0">${tiles}${desc}${timelineHtml}${links}</div>`;
 
   return (
-    `<div style="font-size:11px;font-weight:600;color:#444;margin-bottom:8px">🎯 ${cveId} — Threat Radar</div>` +
+    `<div style="font-size:11px;font-weight:600;color:#444;margin-bottom:8px">${cveId} — Threat Radar</div>` +
     `<div style="display:flex;gap:12px;align-items:flex-start">` +
     radarSvg + rightPanel +
     `</div>`
@@ -2444,7 +2462,7 @@ async function runCveSearch() {
     _lastCveData      = data;
 
     // Close the drawer before posting results
-    el('cve-panel').classList.remove('open');
+    el('lql-panel').classList.remove('open');
 
     if (!data.hosts || !data.hosts.length) {
       const noResultEl = document.createElement('div');
@@ -2453,7 +2471,7 @@ async function runCveSearch() {
       const fgSearchNoResult = document.createElement('div');
       fgSearchNoResult.className = 'fg-search-link';
       fgSearchNoResult.innerHTML =
-        `🔍 <a href="https://www.fortiguard.com/search?q=${encodeURIComponent(cveId)}" target="_blank">FortiGuard: ${cveId}</a>` +
+        `<a href="https://www.fortiguard.com/search?q=${encodeURIComponent(cveId)}" target="_blank">FortiGuard: ${cveId}</a>` +
         `&nbsp;&nbsp;|&nbsp;&nbsp;` +
         `<a href="https://nvd.nist.gov/vuln/detail/${encodeURIComponent(cveId)}" target="_blank">NVD: ${cveId}</a>`;
       noResultEl.appendChild(fgSearchNoResult);
@@ -2465,7 +2483,7 @@ async function runCveSearch() {
         fgLink.style.cssText = 'color:#cc0000;font-weight:600;display:block;margin-top:4px;';
         noResultEl.appendChild(fgLink);
       }
-      appendResultCard('🔬', `CVE: ${cveId}`, noResultEl);
+      appendResultCard('', `CVE: ${cveId}`, noResultEl);
       setStatus('—');
       return;
     }
@@ -2504,7 +2522,15 @@ async function runCveSearch() {
       resultsEl.appendChild(fgEl);
     }
 
-    appendResultCard('🔬', `CVE: ${cveId} — ${data.total_affected} hosts (${exp} exposed)`, resultsEl);
+    appendResultCard('', `CVE: ${cveId} — ${data.total_affected} hosts (${exp} exposed)`, resultsEl, {
+      onAnalyse: () => _runBatchedAnalysis(
+        data.hosts, 10,
+        (batch, offset) => buildCveAnalysisPrompt(data, fgOutbreaks, batch, offset, data.hosts.length),
+        (batch, offset, total, batchNum, totalBatches) =>
+          `Analyse attack surface for ${cveId}${totalBatches > 1 ? ` (batch ${batchNum}/${totalBatches})` : ''}`,
+        true, // useServerSide — Bifrost/Claude Haiku-4.5, not on-device WebLLM
+      ),
+    });
 
     // Open FortiGuard PSIRT page for this CVE
     chrome.tabs.create({ url: `https://www.fortiguard.com/psirt/${encodeURIComponent(cveId)}`, active: false });
@@ -2515,13 +2541,6 @@ async function runCveSearch() {
         `https://fortiguard.fortinet.com/outbreak-alert?date=&risk=&vendor=&type=vulnerability&sort=`;
       chrome.tabs.create({ url: outbreakUrl, active: false });
     }
-
-    // Auto-trigger executive analysis with combined CNAPP + FortiGuard context
-    if (guardBusy()) return;
-    const prompt = buildCveAnalysisPrompt(data, fgOutbreaks);
-    history.push({ role: 'user', content: prompt });
-    appendTurn('user', `Analyse attack surface for ${cveId}`);
-    send(true);
   } catch (e) {
     statusEl.textContent = `✗ ${e.message}`;
     statusEl.className   = 'err';
@@ -2530,7 +2549,7 @@ async function runCveSearch() {
     errEl.className = 'cve-summary';
     errEl.style.color = 'var(--err)';
     errEl.textContent = e.message;
-    appendResultCard('🔬', `CVE: ${cveId} — error`, errEl);
+    appendResultCard('', `CVE: ${cveId} — error`, errEl);
   } finally {
     btn.disabled = false;
   }
@@ -2571,13 +2590,13 @@ function renderCveResults(data, resultsEl) {
     if (h.host_exposed) {
       const b = document.createElement('span');
       b.className = 'cve-badge internet';
-      b.textContent = '🌐 host exposed';
+      b.textContent = 'host exposed';
       hdr.appendChild(b);
     }
     if (h.container_exposed) {
       const b = document.createElement('span');
       b.className = 'cve-badge container';
-      b.textContent = '📦 container exposed';
+      b.textContent = 'container exposed';
       hdr.appendChild(b);
     }
     const sevBadge = document.createElement('span');
@@ -2630,7 +2649,7 @@ function renderCveResults(data, resultsEl) {
           `<span class="cve-label">container</span>` +
           `<span class="cve-val">${esc(c.name)}` +
           (c.image ? ` <span style="color:var(--dim)">(${esc(c.image)})</span>` : '') +
-          (c.internet_exposed ? ' <span class="cve-badge internet" style="margin-left:4px">🌐</span>' : '') +
+          (c.internet_exposed ? ' <span class="cve-badge internet" style="margin-left:4px">(internet)</span>' : '') +
           `</span>`;
         cSection.appendChild(row);
       });
@@ -2644,66 +2663,6 @@ function renderCveResults(data, resultsEl) {
 }
 
 // ── FortiCNAPP LQL ───────────────────────────────────────────────────────────
-
-function formatApiEnrichment(enrichment) {
-  if (!enrichment || !Object.keys(enrichment).length) return '';
-  const lines = ['\n\n--- FortiCNAPP API Correlation ---'];
-  const { alerts, vulnerabilities, inventory, cloud_activities, container_vulnerabilities, machines, s3_sensitive_data } = enrichment;
-  if (alerts) {
-    lines.push(`Open Critical/High Alerts (${alerts.count} total):`);
-    (alerts.items || []).forEach(a => {
-      const info = a.alertInfo || {};
-      lines.push(`  [${a.severity}] ${a.alertName || a.alertType || a.alertId}: ${info.subject || info.description || ''} reachability:${a.reachability || '?'} — ${a.startTime || ''}`);
-    });
-  }
-  if (vulnerabilities) {
-    lines.push(`Active Critical/High CVEs on matched hosts (${vulnerabilities.count} total):`);
-    (vulnerabilities.items || []).forEach(v => {
-      const fk = v.featureKey || {}; const fi = v.fixInfo || {};
-      const host = v.machineTags ? (v.machineTags.Hostname || v.machineTags.Name || '') : '';
-      lines.push(`  [${v.severity}] ${v.vulnId} pkg:${fk.name || '?'} ${fk.version_installed || ''} → fix:${fi.fixed_version || fi.fix_available || '?'} host:${host} status:${v.status || ''}`);
-    });
-  }
-  if (container_vulnerabilities) {
-    lines.push(`Critical/High CVEs on matched containers (${container_vulnerabilities.count} total):`);
-    (container_vulnerabilities.items || []).forEach(v => {
-      const fk = v.featureKey || {}; const fi = v.fixInfo || {};
-      lines.push(`  [${v.severity}] ${v.vulnId} pkg:${fk.name || '?'} ${fk.version_installed || ''} → fix:${fi.fixed_version || fi.fix_available || '?'} status:${v.status || ''}`);
-    });
-  }
-  if (s3_sensitive_data) {
-    lines.push(`S3 Sensitive Data Correlation — Inventory API tag scan (${s3_sensitive_data.count} buckets, ${s3_sensitive_data.sensitive_count} with data-classification tags):`);
-    (s3_sensitive_data.items || []).forEach(b => {
-      const tagStr = Object.keys(b.sensitive_tags || {}).length
-        ? Object.entries(b.sensitive_tags).map(([k, v]) => `${k}=${v}`).join(', ')
-        : 'no classification tags';
-      lines.push(`  ${b.urn || '?'} region:${b.resourceRegion || '?'} status:${b.status || '?'} tags:[${tagStr}]`);
-    });
-    if (s3_sensitive_data.sensitive_count === 0) {
-      lines.push('  NOTE: No data-classification tags found. Buckets may be untagged — treat all exposed buckets as potentially sensitive.');
-    }
-  }
-  if (inventory) {
-    lines.push(`Inventory status for matched cloud resources (${inventory.count} total):`);
-    (inventory.items || []).forEach(i => {
-      const s = i.status || {}; const reason = s.reason || '';
-      lines.push(`  [${i.csp}] ${i.resourceType} ${i.urn || ''} region:${i.resourceRegion || ''} service:${i.service || ''} status:${reason || JSON.stringify(s)}`);
-    });
-  }
-  if (machines) {
-    lines.push(`Host details for matched MIDs (${machines.count} total):`);
-    (machines.items || []).forEach(m => {
-      const t = m.machineTags || {};
-      lines.push(`  ${m.hostname || '?'} ip:${m.primaryIpAddr || t.InternalIp || '?'} externalIp:${t.ExternalIp || '?'} internetExposure:${t.lw_InternetExposure || 'No'} provider:${t.VmProvider || '?'}`);
-    });
-  }
-  if (cloud_activities) {
-    lines.push(`Correlated CloudTrail activity events (${cloud_activities.count} total):`);
-    (cloud_activities.items || []).forEach(a =>
-      lines.push(`  ${a.eventType} actor:${a.eventActor || '?'} src:${a.sourceIPAddress || '?'} — ${a.startTime || ''}`));
-  }
-  return lines.join('\n');
-}
 
 let _lqlQueries = [];
 
@@ -2733,7 +2692,7 @@ async function loadLqlQueries() {
     if (data.error) throw new Error(data.error);
     _lqlQueries = data.queries || [];
     if (!_lqlQueries.length) {
-      sel.innerHTML = '<option value="">No saved queries — use ✨ Assisted Investigation</option>';
+      sel.innerHTML = '<option value="">No saved queries — use LQL Builder</option>';
       return;
     }
     sel.innerHTML = '<option value="">— select a query —</option>';
@@ -2747,6 +2706,65 @@ async function loadLqlQueries() {
   } catch (e) {
     sel.innerHTML = `<option value="">Error: ${e.message}</option>`;
   }
+}
+
+// window.prompt()/confirm() don't reliably work inside a Chrome extension side panel
+// (it isn't a top-level browsing context) — they silently return null instead of
+// showing a dialog, which made the old prompt()-based Save button a no-op. Build
+// an inline name/description form instead.
+function buildLqlSaveForm(queryText, objective, containerEl) {
+  const form = document.createElement('div');
+  form.className = 'lql-save-form';
+
+  const nameInput = document.createElement('input');
+  nameInput.className = 'drawer-input';
+  nameInput.placeholder = 'Name for this saved query';
+  nameInput.value = objective.slice(0, 60);
+
+  const descInput = document.createElement('input');
+  descInput.className = 'drawer-input';
+  descInput.placeholder = 'Description (optional)';
+  descInput.value = objective;
+
+  const confirmBtn = document.createElement('button');
+  confirmBtn.className = 'lql-export-btn';
+  confirmBtn.textContent = 'Save';
+
+  const cancelBtn = document.createElement('button');
+  cancelBtn.className = 'lql-export-btn';
+  cancelBtn.textContent = 'Cancel';
+
+  const statusSpan = document.createElement('span');
+  statusSpan.className = 'lql-row-note';
+
+  confirmBtn.addEventListener('click', async () => {
+    const name = nameInput.value.trim();
+    if (!name) { statusSpan.textContent = 'Name is required'; statusSpan.style.color = 'var(--err)'; return; }
+    confirmBtn.disabled = true;
+    statusSpan.style.color = '';
+    statusSpan.textContent = 'saving…';
+    try {
+      const res = await fetch(BASE_URL + '/lql/save', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ name, description: descInput.value.trim(), queryText }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      statusSpan.textContent = `Saved as "${data.id}"`;
+      statusSpan.style.color = 'var(--ok)';
+      await loadLqlQueries();
+      form.remove();
+    } catch (e) {
+      statusSpan.textContent = `Save failed: ${e.message}`;
+      statusSpan.style.color = 'var(--err)';
+      confirmBtn.disabled = false;
+    }
+  });
+  cancelBtn.addEventListener('click', () => form.remove());
+
+  form.append(nameInput, descInput, confirmBtn, cancelBtn, statusSpan);
+  containerEl.appendChild(form);
 }
 
 el('lql-run').addEventListener('click', async () => {
@@ -2788,31 +2806,19 @@ el('lql-run').addEventListener('click', async () => {
 
     if (!rows.length) {
       resultsEl.innerHTML = '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
-      appendResultCard('📊', `LQL: ${query.id}`, resultsEl);
+      appendResultCard('', `LQL: ${query.id}`, resultsEl);
       return;
     }
 
     renderLqlTable(resultsEl, rows, total, query.id);
-    appendResultCard('📊', `LQL: ${query.id} — ${statusEl.textContent}`, resultsEl);
-
-    // Plain-text summary for AI context — capped at 100 rows so a full one-row-per-resource
-    // table (required by INCIDENT_REPORT_TEMPLATE) reliably finishes within the gateway's
-    // observed output-token ceiling instead of getting cut off mid-table (verified empirically:
-    // ~120 rows is where a 4096-token completion runs out for this template's row format).
-    const keys       = Object.keys(rows[0]);
-    const sampleRows = rows.slice(0, 100);
-    const sample     = sampleRows.map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
-    const coverage   = rows.length > sampleRows.length
-      ? `\n\n(Only the first ${sampleRows.length} of ${rows.length} matching rows are listed above — the table must have exactly these ${sampleRows.length} rows, and must note it is a partial sample if the objective implies completeness.)`
-      : '';
-    const regionKeys = keys.filter(k => /region/i.test(k));
-    const lqlRegions = [...new Set(rows.flatMap(r => regionKeys.map(k => r[k])).filter(Boolean))];
-    if (guardBusy()) return;
-    history.push({
-      role: 'user',
-      content: `Security finding data from LQL query "${query.id}" — ${count} rows:\n\n${sample}${coverage}${formatApiEnrichment(data.api_enrichment)}\n\n${buildReportInstructions()}${_regulatoryContext(lqlRegions)}`,
+    appendResultCard('', `LQL: ${query.id} — ${statusEl.textContent}`, resultsEl, {
+      onAnalyse: () => _runBatchedAnalysis(
+        rows, 10,
+        (batch, offset) => buildLqlAnalysisPrompt(rows, query.id, batch, offset, rows.length),
+        (batch, offset, total, batchNum, totalBatches) =>
+          `Analyse LQL results for ${query.id}${totalBatches > 1 ? ` (batch ${batchNum}/${totalBatches})` : ''}`,
+      ),
     });
-    send(true); // auto-triggers executive analysis; user turn already pushed above
   } catch (e) {
     statusEl.textContent = `✗ ${e.message}`;
     statusEl.className   = 'err';
@@ -2825,29 +2831,27 @@ el('lql-run').addEventListener('click', async () => {
 
 // ── LQL tab switching ─────────────────────────────────────────────────────────
 
-el('investigate-btn').addEventListener('click', runCloudInvestigation);
-el('investigate-prompt').addEventListener('keydown', e => {
-  if (e.key === 'Enter') runCloudInvestigation();
-});
-
-// Cloud Investigation output matches Assisted Investigation's two-part layout:
-// a results card (via appendResultCard, same .lql-query-preview/.lql-row-note
-// classes as the "Generated LQL" preview) built once the full tool-call trail
-// is known, followed by the narrative answer as a plain chat bubble. Progress
-// during the stream shows only in the drawer's status/boat spinner, same as
-// Assisted Investigation's "running…" + boat while /lql/generate is in flight
-// — the trail itself isn't revealed incrementally in the log because
-// appendResultCard's History-pane copy is a one-time clone, not a live
-// mirror, so building the card before the trail is complete would leave the
-// History pane permanently missing later steps.
-async function runCloudInvestigation() {
-  const prompt = el('investigate-prompt').value.trim();
+// ── FortiCNAPP Search (REST API) ──────────────────────────────────────────
+// Agent loop that hits serve.py's /mcp/forensic — that endpoint pins the
+// model to Claude Haiku-4.5 with a low temperature and top_k=10 server-side,
+// independent of ANTHROPIC_DEFAULT_MODEL/the Admin → LLM Model picker (which
+// only affects /lql/generate and on-device chat). No on-device model or
+// tool-calling support required.
+// Unlike Cloud Investigation, this tab has NO GenAI-written final answer — serve.py
+// still uses Claude to pick which read-only FortiCNAPP tool(s) to call, but the
+// response is a 'final_raw' event ({groups: [{tool, rows}, ...]}) carrying the actual
+// rows collected from every tool call. All groups' rows are flattened into one
+// table and rendered with renderLqlTable() — the exact same single-table,
+// no-AI-analysis-button shape the LQL Builder tab uses — so what you see is exactly
+// what FortiCNAPP returned, no templated prose or extra chrome in between.
+async function runCloudInvestigationOnDevice() {
+  const prompt = el('investigate-od-prompt').value.trim();
   if (!prompt) return;
   if (guardBusy()) return;
 
-  const btn       = el('investigate-btn');
-  const statusEl  = el('investigate-status');
-  const stepperEl = el('investigate-stepper');
+  const btn       = el('investigate-od-btn');
+  const statusEl  = el('investigate-od-status');
+  const stepperEl = el('investigate-od-stepper');
 
   btn.disabled = true;
   statusEl.textContent = 'investigating…';
@@ -2859,9 +2863,9 @@ async function runCloudInvestigation() {
   el('send').disabled = true;
 
   const steps = [];
-  let finalText = '';
+  let groups = [];
   try {
-    const res = await fetch(BASE_URL + '/mcp/investigate', {
+    const res = await fetch(BASE_URL + '/mcp/forensic', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prompt }),
@@ -2882,55 +2886,37 @@ async function runCloudInvestigation() {
         let ev; try { ev = JSON.parse(line); } catch { continue; }
         if (ev.type === 'tool_call') {
           steps.push({ tool: ev.tool, summary: null });
-          statusEl.textContent = `🔧 ${ev.tool}…`;
+          statusEl.textContent = `${ev.tool}…`;
           updateStepper(stepperEl, steps.length, 6);
         } else if (ev.type === 'tool_result') {
           const last = steps[steps.length - 1];
           if (last) last.summary = ev.summary;
-        } else if (ev.type === 'final') {
-          finalText = ev.text || '';
+        } else if (ev.type === 'final_raw') {
+          groups = ev.groups || [];
         }
       }
     }
 
     el('lql-panel').classList.remove('open');
 
-    // Results card — same visual language as the "Generated LQL" collapsible
-    // preview (.lql-query-preview / .lql-row-note), just listing tool calls
-    // instead of a query string.
     const resultsEl = document.createElement('div');
     resultsEl.className = 'lql-result-body';
-    const details = document.createElement('details');
-    details.className = 'lql-query-preview';
-    details.open = true;
-    const summaryEl = document.createElement('summary');
-    summaryEl.textContent = `▶ ${steps.length} tool call${steps.length !== 1 ? 's' : ''}`;
-    details.appendChild(summaryEl);
-    steps.forEach(s => {
-      const row = document.createElement('div');
-      row.className = 'lql-row-note';
-      row.textContent = `🔧 ${s.tool} — ${s.summary || '(no result)'}`;
-      details.appendChild(row);
-    });
-    resultsEl.appendChild(details);
-    appendResultCard('🔎', `Cloud Investigation: ${prompt}`, resultsEl);
 
-    // Narrative answer, as a plain AI turn — the model's answer is already
-    // final (no second LLM call needed, unlike Assisted Investigation's
-    // send(true)), so render it directly the same way a static AI message
-    // (e.g. the greeting) renders: markdown + copy/PDF buttons, no visible
-    // user bubble, matching Assisted Investigation's own report step.
-    if (finalText) {
-      history.push({ role: 'user', content: prompt });
-      history.push({ role: 'assistant', content: finalText });
-      appendTurn('ai', finalText);
+    const rows = groups.flatMap(g => g.rows || []);
+    if (!rows.length) {
+      resultsEl.innerHTML = '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
+      appendResultCard('', `FortiCNAPP Search: ${prompt}`, resultsEl);
+    } else {
+      renderLqlTable(resultsEl, rows, rows.length, 'forticnapp-forensic');
+      appendResultCard('', `FortiCNAPP Search: ${prompt} — ${rows.length} row${rows.length !== 1 ? 's' : ''}`, resultsEl);
     }
+
     statusEl.textContent = 'done';
     statusEl.className   = 'ok';
   } catch (err) {
     statusEl.textContent = `✗ ${err.message}`;
     statusEl.className   = 'err';
-    appendTurn('system', `Cloud Investigation failed: ${err.message}`);
+    appendTurn('system', `FortiCNAPP Search failed: ${err.message}`);
   } finally {
     busy = false;
     el('send').disabled = false;
@@ -2940,13 +2926,18 @@ async function runCloudInvestigation() {
   }
 }
 
+el('investigate-od-btn').addEventListener('click', runCloudInvestigationOnDevice);
+el('investigate-od-prompt').addEventListener('keydown', e => {
+  if (e.key === 'Enter') el('investigate-od-btn').click();
+});
+
+function switchLqlTab(tabName) {
+  document.querySelectorAll('.lql-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tabName));
+  document.querySelectorAll('.lql-pane').forEach(p => p.classList.toggle('active', p.id === 'lql-pane-' + tabName));
+}
+
 document.querySelectorAll('.lql-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.lql-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.lql-pane').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    el('lql-pane-' + tab.dataset.tab).classList.add('active');
-  });
+  tab.addEventListener('click', () => switchLqlTab(tab.dataset.tab));
 });
 
 // ── LQL Generate ─────────────────────────────────────────────────────────────
@@ -2957,7 +2948,7 @@ let _genQueryText = '';
 // Injects a hidden user message with error context so Claude asks targeted
 // clarifying questions. After the AI responds, a "Re-run LQL" quick-action
 // button appears so the user can retry with a refined objective.
-function _startLqlScopingConversation(objective, errorMsg) {
+async function _startLqlScopingConversation(objective, errorMsg) {
   if (guardBusy()) return;
   const scopingPrompt = [
     `The user tried to run a FortiCNAPP LQL security investigation with this objective:`,
@@ -2985,28 +2976,24 @@ function _startLqlScopingConversation(objective, errorMsg) {
   // After AI responds, attach a Re-run button to its bubble
   const bubble = appendTurn('ai');
   const cursor = Object.assign(document.createElement('span'), { className: 'cursor' });
-  bubble.appendChild(cursor);
+  const funFact = makeFunFact();
+  bubble.append(funFact, cursor);
+  if (bubble._allBody) bubble._allBody.appendChild(funFact.cloneNode(true));
   busy = true;
   el('send').disabled = true;
 
-  const gw      = el('gateway').value || 'bifrost';
-  const profile = GATEWAYS[gw] || GATEWAYS.bifrost;
-  const key     = keyInput.value.trim();
-  const baseUrl = urlInput.value.trim().replace(/\/+$/, '');
-  const headers = profile.headers(key, gw === 'helicone' ? key2Input.value.trim() : undefined);
-
-  setStatus('scoping…', 'busy');
-  fetch(`${baseUrl}/v1/messages`, {
-    method: 'POST', headers,
-    body: JSON.stringify({
-      model: el('model').value, max_tokens: MAX_TOKENS,
-      stream: true, system: SYSTEM_PROMPT, messages: history,
-      tools: [WEB_SEARCH_TOOL],
-    }),
-  }).then(async res => {
-    if (!res.ok) throw new Error(`API ${res.status}: ${await res.text()}`);
-    const { out } = await readStream(res, bubble, cursor);
+  setStatus('loading model…', 'busy');
+  (async () => {
+    const engine = await getEngine(p => setStatus(p.text || 'loading model…', 'busy'));
+    setStatus('scoping…', 'busy');
+    const chunks = await engine.chat.completions.create({
+      model: webllmModel, max_tokens: MAX_TOKENS, temperature: CHAT_TEMPERATURE, stream: true,
+      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...history],
+    });
+    const { out } = await readStream(chunks, bubble, cursor, funFact);
     cursor.remove();
+    bubble._allBody?.querySelector('.fun-fact')?.remove();
+    funFact.remove();
     if (out) {
       const node = document.createElement('span');
       setRendered(node, renderMarkdown(out));
@@ -3037,7 +3024,8 @@ function _startLqlScopingConversation(objective, errorMsg) {
     bubble.appendChild(rerunBtn);
     if (bubble._allBody) bubble._allBody.appendChild(rerunBtn.cloneNode(true));
     scrollLog();
-  }).catch(err => {
+  })().catch(err => {
+    invalidateEngineOnGpuError(err);
     cursor.remove();
     bubble.textContent = `Error: ${err.message}`;
     history.pop();
@@ -3125,7 +3113,7 @@ el('lql-gen-btn').addEventListener('click', async () => {
         if (!line.trim()) continue;
         let ev; try { ev = JSON.parse(line); } catch { continue; }
         if (ev.type === 'attempt') {
-          statusEl.textContent = ev.phase === 'asking_claude' ? 'asking Claude…'
+          statusEl.textContent = ev.phase === 'asking_claude' ? 'Chatting with FortiAIScout…'
                                 : ev.phase === 'validating'    ? 'validating query…'
                                 : 'running…';
           updateStepper(stepperEl, ev.attempt, ev.max);
@@ -3142,10 +3130,9 @@ el('lql-gen-btn').addEventListener('click', async () => {
       const cveMatch = objective.match(/CVE-\d{4}-\d{4,}/i);
       if (cveMatch) {
         const cveId = cveMatch[0].toUpperCase();
-        statusEl.textContent = `↪ running CVE tab for ${cveId}`;
+        statusEl.textContent = `↪ running Attack Surface tab for ${cveId}`;
         statusEl.className   = 'ok';
-        el('lql-panel').classList.remove('open');
-        el('cve-panel').classList.add('open');
+        switchLqlTab('cve');
         el('codesec-panel').classList.remove('open');
         el('compliance-panel').classList.remove('open');
         el('cve-input').value = cveId;
@@ -3201,38 +3188,30 @@ el('lql-gen-btn').addEventListener('click', async () => {
       summary.textContent = '▶ Generated LQL';
       const pre = document.createElement('pre');
       pre.textContent = _genQueryText;
-      details.append(summary, pre);
+      const saveBtn = document.createElement('button');
+      saveBtn.className = 'lql-export-btn';
+      saveBtn.textContent = 'Save to LQL tab';
+      saveBtn.style.marginTop = '6px';
+      saveBtn.addEventListener('click', () => buildLqlSaveForm(_genQueryText, objective, details));
+      details.append(summary, pre, saveBtn);
       resultsEl.appendChild(details);
     }
 
     if (!rows.length) {
       resultsEl.innerHTML += '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
-      appendResultCard('📊', `LQL: ${label}`, resultsEl);
+      appendResultCard('', `LQL: ${label}`, resultsEl);
       return;
     }
 
     renderLqlTable(resultsEl, rows, total, label);
-    appendResultCard('📊', `LQL: ${label} — ${statusEl.textContent}`, resultsEl);
-
-    // Capped at 100 rows so a full one-row-per-resource table (required by
-    // INCIDENT_REPORT_TEMPLATE) reliably finishes within the gateway's observed output-token
-    // ceiling instead of getting cut off mid-table (verified empirically: ~120 rows is where a
-    // 4096-token completion runs out for this template's row format).
-    const keys       = Object.keys(rows[0]);
-    const sampleRows = rows.slice(0, 100);
-    const sample     = sampleRows.map(r => keys.map(k => `${k}=${r[k] ?? ''}`).join(' | ')).join('\n');
-    const coverage   = rows.length > sampleRows.length
-      ? `\n\n(Only the first ${sampleRows.length} of ${rows.length} matching rows are listed above — the table must have exactly these ${sampleRows.length} rows, and must note it is a partial sample if the objective implies completeness.)`
-      : '';
-    // Extract regions from row data for regulatory context
-    const regionKeys = keys.filter(k => /region/i.test(k));
-    const lqlRegions = [...new Set(rows.flatMap(r => regionKeys.map(k => r[k])).filter(Boolean))];
-    if (guardBusy()) return;
-    history.push({
-      role: 'user',
-      content: `Security finding data from LQL query "${label}" — ${count} rows:\n\n${sample}${coverage}${formatApiEnrichment(data.api_enrichment)}\n\n${buildReportInstructions()}${_regulatoryContext(lqlRegions)}`,
+    appendResultCard('', `LQL: ${label} — ${statusEl.textContent}`, resultsEl, {
+      onAnalyse: () => _runBatchedAnalysis(
+        rows, 10,
+        (batch, offset) => buildLqlAnalysisPrompt(rows, label, batch, offset, rows.length),
+        (batch, offset, total, batchNum, totalBatches) =>
+          `Analyse LQL results for ${label}${totalBatches > 1 ? ` (batch ${batchNum}/${totalBatches})` : ''}`,
+      ),
     });
-    send(true);
   } catch (e) {
     statusEl.textContent = `✗ ${e.message}`;
     statusEl.className   = 'err';
@@ -3245,10 +3224,50 @@ el('lql-gen-btn').addEventListener('click', async () => {
 });
 
 // ── LQL table renderer ───────────────────────────────────────────────────────
+const LQL_BADGE_KEY_RE = /(SEVERITY|STATUS|RISK|COMPLIANCE|ENCRYPT|PUBLIC)/i;
+const LQL_BADGE_RULES = [
+  { re: /^(critical|high|fail(ed)?|true|non-?compliant|public|open|violat)/i, cls: 'lql-badge-crit' },
+  { re: /^(medium|warn(ing)?|unknown|partial)/i, cls: 'lql-badge-warn' },
+  { re: /^(low|pass(ed)?|false|compliant|closed|ok|healthy|private|encrypted)/i, cls: 'lql-badge-ok' },
+];
+
+function lqlBadgeClassFor(key, val) {
+  if (!LQL_BADGE_KEY_RE.test(key) || !val) return null;
+  const rule = LQL_BADGE_RULES.find(r => r.re.test(val.trim()));
+  return rule ? rule.cls : 'lql-badge-neutral';
+}
+
+// FortiCNAPP Inventory search returns `cloudDetails` as a nested object
+// ({accountAlias, accountID, ...} for AWS; subscriptionName/subscriptionId for
+// Azure; projectId for GCP) — rendered as-is via String() it's just
+// "[object Object]". Flatten it to the one line an analyst actually wants:
+// "<CSP> <alias or id>" (falls back to raw JSON if the shape is unrecognized).
+function _formatCloudDetails(csp, cd) {
+  if (!cd || typeof cd !== 'object') return String(cd ?? '');
+  const label = cd.accountAlias || cd.subscriptionName || cd.projectId
+    || cd.accountID || cd.accountId || cd.subscriptionId || '';
+  const cspLabel = csp || (cd.accountID || cd.accountId ? 'AWS' : cd.subscriptionId ? 'Azure' : cd.projectId ? 'GCP' : '');
+  return label ? `${cspLabel} ${label}`.trim() : JSON.stringify(cd);
+}
+
 function renderLqlTable(containerEl, rows, totalRows, queryLabel) {
   containerEl.innerHTML = '';
 
   const URL_RE = /^https?:\/\/\S+$/;
+  // Cells past this length still render in full (CSS wraps rather than truncates),
+  // but get a "▸ show more / ▾ show less" toggle so a long value doesn't force
+  // every other row's cell to look equally tall.
+  const LONG_CELL_THRESHOLD = 140;
+  const SHORT_PREVIEW_LEN   = 140;
+
+  // cloudDetails is a nested object in FortiCNAPP's Inventory search response —
+  // flatten it in place, on every row, before deriving columns/CSV/cell rendering
+  // below, so it's treated exactly like any other plain string field.
+  if (rows.some(r => r && typeof r.cloudDetails === 'object')) {
+    rows = rows.map(r => (r && typeof r.cloudDetails === 'object')
+      ? { ...r, cloudDetails: _formatCloudDetails(r.csp, r.cloudDetails) }
+      : r);
+  }
 
   const keys = Object.keys(rows[0]);
   const displayed = rows.slice(0, 200);
@@ -3307,12 +3326,31 @@ function renderLqlTable(containerEl, rows, totalRows, queryLabel) {
     keys.forEach(k => {
       const td  = document.createElement('td');
       const val = String(r[k] ?? '');
+      const badgeCls = lqlBadgeClassFor(k, val);
       if (URL_RE.test(val)) {
         const a = document.createElement('a');
         a.className = 'lql-link';
         a.href = val; a.target = '_blank'; a.rel = 'noopener';
         a.textContent = val;
         td.appendChild(a);
+      } else if (badgeCls) {
+        const badge = document.createElement('span');
+        badge.className = `lql-badge ${badgeCls}`;
+        badge.textContent = val;
+        td.appendChild(badge);
+      } else if (val.length > LONG_CELL_THRESHOLD) {
+        const textSpan = document.createElement('span');
+        textSpan.textContent = val.slice(0, SHORT_PREVIEW_LEN) + '…';
+        const toggle = document.createElement('span');
+        toggle.className = 'lql-cell-toggle';
+        toggle.textContent = `▸ show more (${val.length} chars)`;
+        let expanded = false;
+        toggle.addEventListener('click', () => {
+          expanded = !expanded;
+          textSpan.textContent = expanded ? val : val.slice(0, SHORT_PREVIEW_LEN) + '…';
+          toggle.textContent = expanded ? '▾ show less' : `▸ show more (${val.length} chars)`;
+        });
+        td.append(textSpan, toggle);
       } else {
         td.textContent = val;
       }

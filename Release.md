@@ -4,6 +4,86 @@ Running log of notable features and changes. Newest entries at the top.
 
 ---
 
+## 2026-09-11
+
+### Fixed: Attack Surface AI analysis appeared stuck / produced no visible report
+
+Three compounding bugs, found while chasing "attack surface analysis is stuck for minutes / Generate AI Analysis shows nothing":
+
+1. `serve.py` used a single-threaded `socketserver.TCPServer` — the entire backend could only handle one HTTP request at a time, so any slow call (a CVE lookup, an alert search) made every other endpoint feel hung too. Switched to `http.server.ThreadingHTTPServer`.
+2. `_fetch_cve_intel()`'s three external calls (EPSS, CISA KEV, NVD) ran sequentially; parallelized with `ThreadPoolExecutor`.
+3. The real culprit for "Generate AI Analysis shows nothing": `_sendServerSideAnalysis()` (the non-streaming path `/analysis/generate` uses for CVE/Attack Surface reports) built the rendered report into a detached DOM node and never appended it to the visible chat bubble — only the Copy/PDF buttons got attached. The backend was generating the report correctly the whole time; it just never reached the screen. Also hardened `buildAnalyseBtn`'s click handler, which previously had no error handling — any thrown error left the button stuck on "⏳ analysing…" forever with no feedback.
+
+Also added a CRITICAL system-prompt block to `_run_mcp_agent_loop` (FortiCNAPP Search / Forensic) clarifying that Alerts span three categories (`Policy`="Risk Alerts", `Anomaly`, `Composite`="Threat Alerts") and a `Policy`-filtered or severity-only query does not already include Composite/Threat alerts.
+
+---
+
+## 2026-09-10 (6)
+
+### Fixed: Cloud Investigation (on-device) failing on every default model
+
+The on-device Cloud Investigation tab (added in 2026-09-10 (4)) always failed in practice: WebLLM's `tools`/function-calling path is only implemented for Hermes model variants, and none of the three Qwen2.5 models in the Admin dropdown are Hermes — every attempt threw `... is not supported for ChatCompletionRequest.tools`. Added **Hermes-2-Pro-Llama-3-8B** as a fourth on-device model option, and `runCloudInvestigationOnDevice()` now checks the selected model against a `TOOL_CALLING_MODELS` allowlist before loading anything, failing fast with a message pointing the user at Hermes-2-Pro-Llama-3-8B instead of surfacing WebLLM's raw error after a model load. Switch to it in Admin → LLM Model before using this tab.
+
+Hermes-2-Pro surfaced a second, related restriction: WebLLM's tool-calling mode for this model injects its own system prompt internally and throws `CustomSystemPromptError` if the request also includes a custom `role: 'system'` message. Folded the investigator instructions into the initial `user` turn instead of a separate system message — no functional change to the instructions themselves.
+
+---
+
+## 2026-09-10 (5)
+
+### Risk Hunting reports simplified back to just the raw table — no AI analysis
+
+The "🤖 Generate AI Analysis" opt-in (added in 2026-09-10 (3)) turned out not to be very useful for Risk Hunting: LQL saved-query and Assisted Investigation results now render as just the raw table (`renderLqlTable`), with no AI-analysis button offered at all. CVE/Unified Attack Threat Surface reports are unaffected — that's the one place a written report still adds value (patch commands, risk-profile chart), so it keeps its "🤖 Generate AI Analysis" button and `_runBatchedAnalysis` batching unchanged.
+
+---
+
+## 2026-09-10 (4)
+
+### Prototype: Cloud Investigation driven by the on-device model (no Claude requirement)
+
+New "🔎 Cloud Investigation (on-device)" tab alongside the existing Claude-gated one, in the Risk Hunting drawer. The existing `/mcp/investigate` endpoint runs its whole tool-calling agent loop server-side and hard-requires `ANTHROPIC_DEFAULT_MODEL` to start with `claude` — smaller/local models weren't reliable enough at multi-turn tool-calling when this was tested. This new path moves the loop to the client instead: two new thin `serve.py` endpoints, `GET /mcp/tools` (lists the MCP subprocess's tool schemas, OpenAI-function-calling shaped) and `POST /mcp/call` (invokes one named tool, dumb passthrough to the existing `_mcp_call_tool()`), with no agent loop or Claude gate of their own. `panel.js`'s new `runCloudInvestigationOnDevice()` drives the loop itself — calls the currently-selected WebLLM model with `tools`/`tool_choice: 'auto'`, executes any returned `tool_calls` against `/mcp/call`, feeds results back as `role: 'tool'` messages, and repeats up to the same 6-iteration budget as the server-side version.
+
+This is an early prototype for a longer-term direction: letting the user pick *any* backend (Bifrost/other AI gateway, Ollama, or on-device WebLLM) for every AI-driven feature rather than hardcoding transports per endpoint. Expect this on-device tool-calling loop to be noticeably less reliable than the Claude version — smaller models are more prone to malformed tool calls or premature stopping.
+
+---
+
+## 2026-09-10 (3)
+
+### AI analysis is now opt-in, and batched 10-at-a-time, for every generated report
+
+Previously, the moment a Risk Hunting (LQL saved query / Assisted Investigation) or Unified Attack Threat Surface (CVE) report finished fetching data, `panel.js` automatically pushed a synthetic prompt and ran a full on-device generation — the user had no way to just see the raw table without also paying for (and waiting on) a written report. Now the raw table/data always renders immediately in its result card, and a **"🤖 Generate AI Analysis"** button in the card footer is the only way to trigger the model call (`appendResultCard`'s new `opts.onAnalyse`).
+
+When analysis does run, it processes at most **10 items per generation** (CVE hosts, or LQL rows) via a shared `_runBatchedAnalysis()` helper, then appends a **"▶ Continue analysis (N more)"** button to the AI's reply instead of silently continuing — applies uniformly to all three report types. For CVE reports, the pre-computed risk-profile radar chart is only injected into the first batch's prompt (it's a one-time chart, not per-host data). Removed the now-fully-superseded dormant `#cve-analyse` button (`panel.html`/`panel.js`) — it implemented a single-shot, non-batched version of the same idea but was never wired up to be visible.
+
+---
+
+## 2026-09-10 (2)
+
+### Switched on-device model to Qwen2.5-3B-Instruct by default; Qwen2.5-7B-Instruct/Coder-7B as alternatives; deterministic, concise output
+
+Qwen3-4B proved too "greedy" — verbose, wandering answers even with the report-template system prompt constraining structure. Replaced it with a three-model on-device lineup, selectable from the Admin menu's model dropdown (persisted to `localStorage`):
+
+- **Qwen2.5-3B-Instruct** (default) — fastest generation; 7B was too slow for interactive chat on non-discrete GPUs
+- **Qwen2.5-7B-Instruct** — better complex-report reasoning, opt-in when quality matters more than speed
+- **Qwen2.5-Coder-7B** — alternative for code-heavy follow-up (CodeSec/SBOM findings)
+
+Kept the 16384 `context_window_size` override from the previous entry (all three models default to 4096, same problem as Qwen3-4B). Set `temperature: 0.2` on every `chat.completions.create` call for deterministic, repeatable output instead of creative variation — reports should be the same shape run to run. Tightened `SYSTEM_PROMPT`'s opening line to explicitly demand minimum-words, no-repetition answers. Switching models mid-session calls WebLLM's `engine.reload()` rather than re-creating the engine from scratch. The `<think>` tag stripper from the previous entry is now a defensive no-op (none of the Qwen2.5 variants emit reasoning blocks) — kept in case a future model does.
+
+---
+
+## 2026-09-10
+
+### Qwen3 `<think>` blocks stripped from chat; larger context window; Headroom sidecar fully decommissioned
+
+Chat responses from Qwen3 were leaking raw `<think>...</think>` reasoning blocks into both the rendered bubble and stored history (feeding the model its own prior reasoning on subsequent turns). `readStream()` in `panel.js` now strips them from both, including a still-open trailing `<think>` mid-stream so partial reasoning never flashes on screen.
+
+Also bumped WebLLM's `context_window_size` for Qwen3-4B from its 4096 default to 16384 — large Risk Hunting/CVE report prompts (row data + template) were routinely exceeding 8k input tokens alone and hitting a hard context error. Requires a side panel reload to take effect (engine is cached on first load).
+
+Fully removed the Headroom token-compression sidecar (see 2026-07-03 entry below for what it was) — it was legacy from the old gateway-routed chat path and unused since chat moved on-device. Stripped the `docker-compose.yml` service, `serve.py` routes/state (`/headroom/stats`, `/headroom/toggle`, `HEADROOM_ENABLED`/`HEADROOM_URL`/`HEADROOM_DASHBOARD_URL`), the `panel.js`/`panel.html` UI remnants, and all `.env`/`.env.tpl` vars and docs.
+
+Separately fixed `/lql/generate` returning a bare 404 when `ANTHROPIC_BASE_URL` points at an Ollama (or other OpenAI-compatible) gateway instead of Anthropic-native: `_call_claude()` was unconditionally hitting `/v1/messages` with `x-api-key` auth, producing a broken `.../v1/v1/messages` path against Ollama. Now branches on whether `ANTHROPIC_DEFAULT_MODEL` starts with `claude` to pick `/v1/messages`+`x-api-key` (Anthropic-native) vs. `/chat/completions`+`Bearer` (OpenAI-compatible).
+
+---
+
 ## 2026-07-09
 
 ### Segmented progress stepper replaces the sailboat; real LQL validation errors surface to the model
