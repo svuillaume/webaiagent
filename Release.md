@@ -1,4 +1,4 @@
-# FortiAIScout — Release Notes
+# FortiCNAPP AI Agent — Release Notes
 
 Running log of notable features and changes. Newest entries at the top.
 
