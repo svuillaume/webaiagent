@@ -2,6 +2,8 @@
 
 import { CreateMLCEngine } from './vendor/web-llm/web-llm.js';
 
+console.log('[panel.js] build 2026-09-11-lql-save-debug');
+
 // ── Constants ─────────────────────────────────────────────────────────────
 const BASE_URL       = 'http://localhost:45321';
 // 8192, not 4096: the Risk Hunting / CVE report template now requires one row per matching
@@ -63,28 +65,44 @@ function makeFunFact() {
 // noticeably better at complex report reasoning; Coder-7B for code-heavy CodeSec/SBOM
 // follow-up). Low temperature (0.2) on all these for deterministic, repeatable report output
 // rather than creative variation.
+// Phi-3.5-vision-instruct is the only vision-capable (ModelType.VLM) model this vendored
+// WebLLM build supports — Qwen2.5-VL has no MLC-compiled weights and no architecture support
+// in web-llm.js, so it can't be added (see web-llm.js's ModelType/model_type entries). Works
+// fine as a plain text chat model too (VLM models accept text-only messages), so it's listed
+// here alongside the text-only models rather than gated behind a separate "vision mode".
 const WEBLLM_MODELS = {
   'Qwen2.5-3B-Instruct-q4f16_1-MLC': 'Qwen2.5-3B-Instruct (fast)',
   'Qwen2.5-7B-Instruct-q4f16_1-MLC': 'Qwen2.5-7B-Instruct',
   'Qwen2.5-Coder-7B-Instruct-q4f16_1-MLC': 'Qwen2.5-Coder-7B',
   'Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC': 'Hermes-2-Pro-Llama-3-8B',
   'Hermes-3-Llama-3.1-8B-q4f16_1-MLC': 'Hermes-3-Llama-3.1-8B',
+  'Phi-3.5-vision-instruct-q4f16_1-MLC': 'Phi-3.5-vision-instruct',
 };
 const DEFAULT_WEBLLM_MODEL = 'Qwen2.5-3B-Instruct-q4f16_1-MLC';
 const CHAT_TEMPERATURE = 0.2;
+
+// WebLLM's `tools`/tool_choice support is implemented only for these Hermes variants (see
+// web-llm.js's hermes2FunctionCallingSystemPrompt) — none of the Qwen2.5 models can drive
+// FortiCNAPP Search on-device. Checked before starting that loop so it fails fast with a
+// message pointing at Hermes instead of letting WebLLM throw mid-request.
+const TOOL_CALLING_MODELS = new Set([
+  'Hermes-2-Pro-Llama-3-8B-q4f16_1-MLC',
+  'Hermes-3-Llama-3.1-8B-q4f16_1-MLC',
+]);
 let webllmModel = localStorage.getItem('webllm_model') || DEFAULT_WEBLLM_MODEL;
 if (!WEBLLM_MODELS[webllmModel]) webllmModel = DEFAULT_WEBLLM_MODEL;
 let enginePromise = null;
 let engineModel = null;
 
-// Both Qwen2.5-7B variants default context_window_size to 4096 in WebLLM's prebuilt config —
-// too small for the Risk Hunting / CVE report prompts (row data + template routinely exceeds
-// 8k input tokens alone, before MAX_TOKENS of output). Override to 16384, comfortably above
-// MAX_TOKENS + the 100-row prompt cap, while staying within what q4f16_1's KV cache can hold
-// on typical GPUs. Hermes-2-Pro-Llama-3-8B (Cloud Investigation on-device's tool-calling model)
-// needs this too — its MCP tool-schema prompt alone runs ~11.5k tokens, above even an 8192
-// window — so there's no smaller window that both fits the prompt and reduces VRAM pressure;
-// GPU memory constraints have to be solved by freeing VRAM elsewhere, not by shrinking this.
+// Both Qwen2.5-7B variants and Phi-3.5-vision-instruct default context_window_size to 4096 in
+// WebLLM's prebuilt config — too small for the Risk Hunting / CVE report prompts (row data +
+// template routinely exceeds 8k input tokens alone, before MAX_TOKENS of output). Override to
+// 16384, comfortably above MAX_TOKENS + the 100-row prompt cap, while staying within what
+// q4f16_1's KV cache can hold on typical GPUs. Hermes-2-Pro-Llama-3-8B (Cloud Investigation
+// on-device's tool-calling model) needs this too — its MCP tool-schema prompt alone runs
+// ~11.5k tokens, above even an 8192 window — so there's no smaller window that both fits the
+// prompt and reduces VRAM pressure; GPU memory constraints have to be solved by freeing VRAM
+// elsewhere, not by shrinking this.
 function getEngine(onProgress) {
   if (!enginePromise) {
     engineModel = webllmModel;
@@ -120,6 +138,19 @@ function invalidateEngineOnGpuError(err) {
 }
 
 const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+// WebLLM's initProgressCallback `.text` is a verbose per-shard status line (e.g.
+// "Fetching param cache[35/62]: 999MB fetched. 60% completed, 34 secs elapsed...") —
+// too long/noisy for the status bar. Show a short phase label + percentage instead.
+function formatLoadProgress(p) {
+  const pct = Number.isFinite(p?.progress) ? Math.round(p.progress * 100) : null;
+  const text = p?.text || '';
+  let phase = 'loading model';
+  if (/param cache/i.test(text))       phase = 'downloading weights';
+  else if (/fetching wasm/i.test(text)) phase = 'downloading runtime';
+  else if (/loading model|shader|gpu/i.test(text)) phase = 'initializing';
+  return pct === null ? phase : `${phase}… ${pct}%`;
+}
 
 // ── State ─────────────────────────────────────────────────────────────────
 const history = [];
@@ -391,58 +422,33 @@ function renderMarkdown(text) {
 
 function setRendered(node, html) {
   // Preserve the copy button across replaceChildren
-  const copyBtn  = node._copyBtn  || null;
-  const copyBtn2 = node._allBody?._copyBtn || null;
-
+  const copyBtn = node._copyBtn || null;
   const tpl = document.createElement('template');
   tpl.innerHTML = html;
   node.replaceChildren(tpl.content.cloneNode(true));
   if (copyBtn) node.appendChild(copyBtn);
-
-  if (node._allBody) {
-    const tpl2 = document.createElement('template');
-    tpl2.innerHTML = html;
-    node._allBody.replaceChildren(tpl2.content.cloneNode(true));
-    if (copyBtn2) node._allBody.appendChild(copyBtn2);
-  }
 }
 
-// ── Chat log (dual-pane: latest / all) ───────────────────────────────────
+// ── Chat log (single continuous pane) ────────────────────────────────────
 function scrollLog() {
-  const active = document.querySelector('.log-pane.active');
-  if (active) active.scrollTop = active.scrollHeight;
+  const pane = el('log-latest');
+  if (pane) pane.scrollTop = pane.scrollHeight;
 }
 
-function _appendToLog(node, cloneForAll) {
+function _appendToLog(node) {
   el('log-latest').appendChild(node);
-  el('log-all').appendChild(cloneForAll || node.cloneNode(true));
   scrollLog();
 }
 
-// Archive the current Latest session and start fresh for a new FortiCNAPP feature.
-// Call when opening any FortiCNAPP drawer so the previous conversation is preserved
-// in History and Latest starts clean for the new feature context.
+// Insert a session separator marking the start of a new FortiCNAPP feature, without
+// clearing prior turns — the log is one continuous history now, not archived per-feature.
 function startNewSession(label) {
-  if (!el('log-latest').children.length) return; // nothing to archive
+  if (!el('log-latest').children.length) return;
   history.length = 0; // resets AI context so the new feature session starts with a clean slate
-
-  // Add a session-separator in log-all (History) so the boundary is visible
   const sep = Object.assign(document.createElement('div'), { className: 'session-sep' });
   sep.textContent = label;
-  el('log-all').appendChild(sep);
-
-  el('log-latest').innerHTML = ''; // clear Latest for the new session
+  el('log-latest').appendChild(sep);
 }
-
-document.querySelectorAll('.log-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    document.querySelectorAll('.log-tab').forEach(t  => t.classList.remove('active'));
-    document.querySelectorAll('.log-pane').forEach(p => p.classList.remove('active'));
-    tab.classList.add('active');
-    el('log-' + tab.dataset.pane).classList.add('active');
-    scrollLog();
-  });
-});
 
 function makeCopyBtn(getText) {
   const btn = Object.assign(document.createElement('button'), {
@@ -578,31 +584,18 @@ function appendTurn(role, text = '') {
     return body;
   }
 
-  // ai turn: body is live-updated during streaming — keep a reference in both panes
+  // ai turn: body is live-updated during streaming
   if (role === 'ai') {
-    const bodyClone   = Object.assign(document.createElement('div'), { className: 'content' });
-    const colClone    = Object.assign(document.createElement('div'), { className: 'bubble-col' });
-    const lblClone    = Object.assign(document.createElement('div'), { className: 'turn-label', textContent: 'FortiAIScout' });
-    const avatarClone = Object.assign(document.createElement('div'), { className: 'role ai', textContent: 'AI' });
-    const turnClone   = Object.assign(document.createElement('div'), { className: 'turn turn-ai' });
-
     col.append(lbl, body);
-    colClone.append(lblClone, bodyClone);
-    turnClone.append(avatarClone, colClone);
 
     // Static text (greeting, page-loaded, etc.) — add copy + PDF buttons immediately
     if (text) {
       col.appendChild(makeCopyBtn(text));
       col.appendChild(makePdfBtn(body));
-      colClone.appendChild(makeCopyBtn(text));
-      colClone.appendChild(makePdfBtn(bodyClone));
     }
 
     el('log-latest').appendChild(turn);
-    el('log-all').appendChild(turnClone);
     scrollLog();
-
-    body._allBody = bodyClone; // dual-pane sync: setRendered writes to both Latest and History simultaneously
     return body;
   }
 }
@@ -616,7 +609,6 @@ const resizePrompt = () => {
 el('clear').addEventListener('click', () => {
   history.length = 0;
   el('log-latest').innerHTML   = '';
-  el('log-all').innerHTML      = '';
   el('token-info').textContent = '';
   el('read-page').classList.remove('active');
   setStatus('—');
@@ -692,7 +684,9 @@ el('tldr').addEventListener('click', () => withPage('tldr', async page => {
   history.push({ role: 'user',      content:
     'Summarize this page. Read the actual content and compress it to the shortest form that keeps every ' +
     'material fact and its meaning intact — no filler, no restating the page title, nothing padded out for ' +
-    'the sake of structure. One fact or claim per bullet. ' +
+    'the sake of structure. One fact or claim per bullet, in YOUR OWN WORDS — never copy a sentence or run of ' +
+    'sentences straight from the page; a bullet that isn\'t shorter than the passage it summarizes is not a ' +
+    'summary, rewrite it. ' +
     'If the page covers multiple distinct topics (or, for a changelog/release-notes page, multiple months or ' +
     'versions), group bullets under a short "### <topic>" heading per group — otherwise just a flat bullet list, ' +
     'no headings needed for a single narrow topic. ' +
@@ -727,7 +721,6 @@ async function readStream(chunks, bubble, cursor, funFact) {
     const delta = chunk.choices?.[0]?.delta?.content;
     if (delta) {
       if (funFact) {
-        bubble._allBody?.querySelector('.fun-fact')?.remove();
         funFact.remove();
         funFact = null;
       }
@@ -776,13 +769,12 @@ async function send(silent = false) {
   const cursor = Object.assign(document.createElement('span'), { className: 'cursor' });
   const funFact = makeFunFact();
   bubble.append(funFact, cursor);
-  if (bubble._allBody) bubble._allBody.appendChild(funFact.cloneNode(true));
   busy = true;
   el('send').disabled = true;
 
   try {
     setStatus('loading model…', 'busy');
-    const engine = await getEngine(p => setStatus(p.text || 'loading model…', 'busy'));
+    const engine = await getEngine(p => setStatus(formatLoadProgress(p), 'busy'));
 
     setStatus('streaming…', 'busy');
     const chunks = await engine.chat.completions.create({
@@ -793,17 +785,12 @@ async function send(silent = false) {
 
     const { out, inputTk, outputTk } = await readStream(chunks, bubble, cursor, funFact);
     cursor.remove();
-    bubble._allBody?.querySelector('.fun-fact')?.remove();
     funFact.remove();
     if (out) {
       const node = document.createElement('span');
       setRendered(node, renderMarkdown(out));
       bubble.appendChild(makeCopyBtn(out));
       bubble.appendChild(makePdfBtn(node));
-      if (bubble._allBody) {
-        bubble._allBody.appendChild(makeCopyBtn(out));
-        bubble._allBody.appendChild(makePdfBtn(node));
-      }
     }
     history.push({ role: 'assistant', content: out });
     setStatus('ok', 'ok');
@@ -858,7 +845,6 @@ async function _runBatchedAnalysis(items, batchSize, buildPrompt, describeTurn, 
         runBatch();
       }, { once: true });
       bubble.appendChild(btn);
-      if (bubble._allBody) bubble._allBody.appendChild(btn.cloneNode(true));
     }
     return true;
   }
@@ -875,7 +861,6 @@ async function _sendServerSideAnalysis(prompt) {
   const cursor = Object.assign(document.createElement('span'), { className: 'cursor' });
   const funFact = makeFunFact();
   bubble.append(funFact, cursor);
-  if (bubble._allBody) bubble._allBody.appendChild(funFact.cloneNode(true));
   busy = true;
   el('send').disabled = true;
 
@@ -891,7 +876,6 @@ async function _sendServerSideAnalysis(prompt) {
     const out = data.text || '';
 
     cursor.remove();
-    bubble._allBody?.querySelector('.fun-fact')?.remove();
     funFact.remove();
     if (out) {
       // Unlike send()'s streaming path (readStream renders into `bubble` incrementally as
@@ -903,11 +887,6 @@ async function _sendServerSideAnalysis(prompt) {
       bubble.appendChild(node);
       bubble.appendChild(makeCopyBtn(out));
       bubble.appendChild(makePdfBtn(node));
-      if (bubble._allBody) {
-        bubble._allBody.appendChild(node.cloneNode(true));
-        bubble._allBody.appendChild(makeCopyBtn(out));
-        bubble._allBody.appendChild(makePdfBtn(node));
-      }
     }
     history.push({ role: 'assistant', content: out });
     setStatus('ok', 'ok');
@@ -981,7 +960,7 @@ async function _sendServerSideAnalysis(prompt) {
   });
 
   menu.addEventListener('click', e => {
-    if (['model-select', 'gateway-models-fetch', 'gateway-model-select'].includes(e.target.id)
+    if (['model-select', 'server-select', 'gateway-models-fetch', 'gateway-model-select'].includes(e.target.id)
         || !e.target.closest('.admin-item')) return;
     menu.classList.remove('open');
     btn.classList.remove('open');
@@ -1009,6 +988,73 @@ async function _sendServerSideAnalysis(prompt) {
 })();
 
 // ── Server-side (Bifrost) model picker ─────────────────────────────────────
+// ── Server selector (Bifrost / Local llama-cpp / on-device WebGPU) ─────────────
+// 'webgpu' routes all of Risk Hunting (LQL Builder generation, CVE/Attack Surface AI
+// analysis, FortiCNAPP Search) through the already-loaded WebLLM engine instead of any
+// server-side gateway — no /gateway/switch call, since serve.py has no upstream concept
+// for it (there's no server-side model at all in this mode).
+function isOnDeviceRiskHunting() {
+  return localStorage.getItem('server_choice') === 'webgpu';
+}
+
+(function () {
+  const serverSel = el('server-select');
+  if (!serverSel) return;
+  const saved = localStorage.getItem('server_choice') || 'bifrost';
+  serverSel.value = saved;
+
+  function resetServerModelPicker() {
+    const modelSel = el('gateway-model-select');
+    const fetchBtn = el('gateway-models-fetch');
+    if (modelSel && fetchBtn) {
+      modelSel.innerHTML = '';
+      modelSel.style.display = 'none';
+      fetchBtn.style.display = 'inline-block';
+    }
+  }
+
+  // serve.py's upstream (DIRECT_UPSTREAM/VIRTUAL_KEY) is an in-memory global, reset to the
+  // .env default (Bifrost) on every process restart — it does NOT persist across restarts
+  // the way this extension's own localStorage choice does. So a saved 'local'/'bifrost'
+  // choice from a previous session can silently drift out of sync with what serve.py is
+  // actually pointed at right now (e.g. after `docker compose restart` or `python3 serve.py`
+  // relaunch) until the user manually re-picks the dropdown. Re-issue the switch on every
+  // load for 'bifrost'/'local' so the two stay in sync without requiring that manual step.
+  async function applyServerChoice(choice, { revertTo } = {}) {
+    if (choice === 'webgpu') {
+      resetServerModelPicker();
+      const fetchBtn = el('gateway-models-fetch');
+      if (fetchBtn) fetchBtn.style.display = 'none';
+      return;
+    }
+    try {
+      const res = await fetch(BASE_URL + '/gateway/switch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ gateway: choice })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
+      resetServerModelPicker(); // clear cached models so next fetch uses the new server
+      const fetchBtn = el('gateway-models-fetch');
+      if (fetchBtn) fetchBtn.style.display = 'inline-block';
+    } catch (e) {
+      console.error('Server switch failed:', e);
+      if (revertTo !== undefined) serverSel.value = revertTo; // revert on error
+    }
+  }
+
+  serverSel.addEventListener('change', () => {
+    const choice = serverSel.value;
+    localStorage.setItem('server_choice', choice);
+    applyServerChoice(choice, { revertTo: saved });
+  });
+
+  applyServerChoice(saved); // resync serve.py to the persisted choice on every load
+})();
+
 // Fetches the gateway's live model catalog (GET /gateway/models, server-side so
 // the API key never touches the browser) instead of hardcoding model ids that
 // drift out of sync with what Bifrost actually has configured. Selecting one
@@ -1066,7 +1112,6 @@ function handleExtLink(e) {
   chrome.tabs.create({ url: a.dataset.href });
 }
 el('log-latest').addEventListener('click', handleExtLink);
-el('log-all').addEventListener('click', handleExtLink);
 el('codesec-body').addEventListener('click', handleExtLink);
 
 el('prompt').addEventListener('input',   resizePrompt);
@@ -1374,7 +1419,6 @@ function appendResultCard(icon, title, contentEl, opts = {}) {
   };
 
   el('log-latest').appendChild(buildCard(contentEl, buildAnalyseBtn()));
-  el('log-all').appendChild(buildCard(contentEl.cloneNode(true), buildAnalyseBtn()));
   scrollLog();
 }
 
@@ -1438,7 +1482,6 @@ function appendGithubCard(owner, repo, branch, files) {
     `<div class="gh-files">${sections}</div>`;
 
   el('log-latest').appendChild(card);
-  el('log-all').appendChild(card.cloneNode(true));
   scrollLog();
 }
 
@@ -2528,7 +2571,7 @@ async function runCveSearch() {
         (batch, offset) => buildCveAnalysisPrompt(data, fgOutbreaks, batch, offset, data.hosts.length),
         (batch, offset, total, batchNum, totalBatches) =>
           `Analyse attack surface for ${cveId}${totalBatches > 1 ? ` (batch ${batchNum}/${totalBatches})` : ''}`,
-        true, // useServerSide — Bifrost/Claude Haiku-4.5, not on-device WebLLM
+        !isOnDeviceRiskHunting(), // useServerSide — Bifrost/Claude Haiku-4.5, unless WebGPU mode is on
       ),
     });
 
@@ -2708,6 +2751,18 @@ async function loadLqlQueries() {
   }
 }
 
+// Turn a free-text objective into a short, underscore-joined name suggestion
+// (e.g. "s3 public access and no encryption" -> "s3_public_access_no_encryption") —
+// filler words dropped, everything else kept in its original casing so acronyms
+// like "S3" or "IAM" survive. Just a starting point: the field stays editable.
+const _NAME_STOPWORDS = new Set(['a','an','the','and','or','of','in','on','for','to','with',
+  'that','are','is','list','all','show','find','get','me','any','have','has']);
+function _suggestQueryName(objective) {
+  const words = objective.split(/[^a-zA-Z0-9]+/).filter(Boolean)
+    .filter(w => !_NAME_STOPWORDS.has(w.toLowerCase()));
+  return words.slice(0, 8).join('_').slice(0, 60) || objective.slice(0, 60);
+}
+
 // window.prompt()/confirm() don't reliably work inside a Chrome extension side panel
 // (it isn't a top-level browsing context) — they silently return null instead of
 // showing a dialog, which made the old prompt()-based Save button a no-op. Build
@@ -2719,7 +2774,7 @@ function buildLqlSaveForm(queryText, objective, containerEl) {
   const nameInput = document.createElement('input');
   nameInput.className = 'drawer-input';
   nameInput.placeholder = 'Name for this saved query';
-  nameInput.value = objective.slice(0, 60);
+  nameInput.value = _suggestQueryName(objective);
 
   const descInput = document.createElement('input');
   descInput.className = 'drawer-input';
@@ -2831,12 +2886,14 @@ el('lql-run').addEventListener('click', async () => {
 
 // ── LQL tab switching ─────────────────────────────────────────────────────────
 
-// ── FortiCNAPP Search (REST API) ──────────────────────────────────────────
-// Agent loop that hits serve.py's /mcp/forensic — that endpoint pins the
-// model to Claude Haiku-4.5 with a low temperature and top_k=10 server-side,
-// independent of ANTHROPIC_DEFAULT_MODEL/the Admin → LLM Model picker (which
-// only affects /lql/generate and on-device chat). No on-device model or
-// tool-calling support required.
+// ── FortiCNAPP Search (REST API) — server-side path ───────────────────────
+// Despite the name, this is the SERVER-SIDE path: an agent loop that hits serve.py's
+// /mcp/forensic, which pins the model to Claude Haiku-4.5 with a low temperature and
+// top_k=10 server-side, independent of ANTHROPIC_DEFAULT_MODEL/the Admin → LLM Model
+// picker (which only affects /lql/generate and on-device chat). No on-device model or
+// tool-calling support required. The on-device equivalent (WebGPU mode) is
+// runFortiCnappSearchOnDevice() below, which runs the same style of tool-selecting
+// loop entirely client-side against /mcp/tools + /mcp/call.
 // Unlike Cloud Investigation, this tab has NO GenAI-written final answer — serve.py
 // still uses Claude to pick which read-only FortiCNAPP tool(s) to call, but the
 // response is a 'final_raw' event ({groups: [{tool, rows}, ...]}) carrying the actual
@@ -2926,7 +2983,144 @@ async function runCloudInvestigationOnDevice() {
   }
 }
 
-el('investigate-od-btn').addEventListener('click', runCloudInvestigationOnDevice);
+// ── FortiCNAPP Search — on-device path (WebGPU mode) ──────────────────────
+// Client-side equivalent of runCloudInvestigationOnDevice() above: same read-only
+// FortiCNAPP MCP tools, same 6-iteration budget, but the tool-selecting loop itself
+// runs against the currently-loaded WebLLM model instead of server-side Claude.
+// WebLLM's `tools`/tool_choice support only exists for the Hermes-2-Pro/Hermes-3
+// variants (see TOOL_CALLING_MODELS) — none of the Qwen2.5 models can drive this, so
+// it fails fast with a message pointing at Hermes rather than letting WebLLM throw
+// mid-request with a confusing error.
+const MCP_ONDEVICE_MAX_ITERATIONS = 6; // mirrors serve.py's MAX_ITERATIONS for /mcp/investigate|forensic
+
+async function runFortiCnappSearchOnDevice() {
+  const prompt = el('investigate-od-prompt').value.trim();
+  if (!prompt) return;
+  if (guardBusy()) return;
+
+  if (!TOOL_CALLING_MODELS.has(webllmModel)) {
+    el('investigate-od-status').textContent = '✗ FortiCNAPP Search on-device requires Hermes-2-Pro or Hermes-3 — switch your on-device model in Admin.';
+    el('investigate-od-status').className = 'err';
+    return;
+  }
+
+  const btn       = el('investigate-od-btn');
+  const statusEl  = el('investigate-od-status');
+  const stepperEl = el('investigate-od-stepper');
+
+  btn.disabled = true;
+  statusEl.textContent = 'loading model…';
+  statusEl.className   = '';
+  startStepper(stepperEl, MCP_ONDEVICE_MAX_ITERATIONS);
+  updateStepper(stepperEl, 1, MCP_ONDEVICE_MAX_ITERATIONS);
+
+  busy = true;
+  el('send').disabled = true;
+
+  // (tool_name, row) pairs across every tool call this loop makes — same shape
+  // serve.py's collected_rows/_group_collected_rows uses, so the two paths render
+  // identically regardless of which one ran.
+  const collectedRows = [];
+
+  try {
+    const toolsRes = await fetch(BASE_URL + '/mcp/tools');
+    if (!toolsRes.ok) throw new Error(`/mcp/tools ${toolsRes.status}`);
+    const { tools } = await toolsRes.json();
+
+    const engine = await getEngine(p => {
+      statusEl.textContent = formatLoadProgress(p);
+    });
+
+    const messages = [
+      { role: 'system', content: 'You are a FortiCNAPP cloud security assistant. Use the available read-only tools to investigate the user objective, then stop calling tools once you have enough data.' },
+      { role: 'user', content: prompt },
+    ];
+
+    for (let iter = 1; iter <= MCP_ONDEVICE_MAX_ITERATIONS; iter++) {
+      statusEl.textContent = `thinking… (${iter}/${MCP_ONDEVICE_MAX_ITERATIONS})`;
+      updateStepper(stepperEl, iter, MCP_ONDEVICE_MAX_ITERATIONS);
+
+      const lastIter = iter === MCP_ONDEVICE_MAX_ITERATIONS;
+      const completion = await engine.chat.completions.create({
+        messages,
+        temperature: CHAT_TEMPERATURE,
+        max_tokens: MAX_TOKENS,
+        ...(lastIter ? {} : { tools, tool_choice: 'auto' }),
+      });
+
+      const msg = completion.choices[0].message;
+      messages.push(msg);
+      const toolCalls = msg.tool_calls || [];
+      if (!toolCalls.length) break; // model gave a final answer (or last iteration forced none)
+
+      for (const call of toolCalls) {
+        const name = call.function?.name || '';
+        let args = {};
+        try { args = JSON.parse(call.function?.arguments || '{}'); } catch { /* malformed args from a smaller model */ }
+
+        statusEl.textContent = `${name}…`;
+        let result;
+        try {
+          const callRes = await fetch(BASE_URL + '/mcp/call', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, arguments: args }),
+          });
+          result = await callRes.json();
+        } catch (e) {
+          result = { success: false, error: String(e) };
+        }
+
+        if (result.success !== false) {
+          const rows = result.data;
+          const items = Array.isArray(rows) ? rows
+                      : (rows && Array.isArray(rows.data)) ? rows.data
+                      : null;
+          if (items) collectedRows.push(...items.map(item => [name, item]));
+          else if (rows != null) collectedRows.push([name, rows]);
+        }
+
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(result).slice(0, 4000), // bound payload back into context, mirrors serve.py's _bound_mcp_tool_result intent
+        });
+      }
+    }
+
+    el('lql-panel').classList.remove('open');
+
+    const resultsEl = document.createElement('div');
+    resultsEl.className = 'lql-result-body';
+    const rows = collectedRows.map(([, row]) => row);
+
+    if (!rows.length) {
+      resultsEl.innerHTML = '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
+      appendResultCard('', `FortiCNAPP Search: ${prompt}`, resultsEl);
+    } else {
+      renderLqlTable(resultsEl, rows, rows.length, 'forticnapp-search-ondevice');
+      appendResultCard('', `FortiCNAPP Search: ${prompt} — ${rows.length} row${rows.length !== 1 ? 's' : ''}`, resultsEl);
+    }
+
+    statusEl.textContent = 'done';
+    statusEl.className   = 'ok';
+  } catch (err) {
+    invalidateEngineOnGpuError(err);
+    statusEl.textContent = `✗ ${err.message}`;
+    statusEl.className   = 'err';
+    appendTurn('system', `FortiCNAPP Search (on-device) failed: ${err.message}`);
+  } finally {
+    busy = false;
+    el('send').disabled = false;
+    btn.disabled = false;
+    stopStepper(stepperEl);
+    scrollLog();
+  }
+}
+
+el('investigate-od-btn').addEventListener('click', () =>
+  isOnDeviceRiskHunting() ? runFortiCnappSearchOnDevice() : runCloudInvestigationOnDevice()
+);
 el('investigate-od-prompt').addEventListener('keydown', e => {
   if (e.key === 'Enter') el('investigate-od-btn').click();
 });
@@ -2978,13 +3172,12 @@ async function _startLqlScopingConversation(objective, errorMsg) {
   const cursor = Object.assign(document.createElement('span'), { className: 'cursor' });
   const funFact = makeFunFact();
   bubble.append(funFact, cursor);
-  if (bubble._allBody) bubble._allBody.appendChild(funFact.cloneNode(true));
   busy = true;
   el('send').disabled = true;
 
   setStatus('loading model…', 'busy');
   (async () => {
-    const engine = await getEngine(p => setStatus(p.text || 'loading model…', 'busy'));
+    const engine = await getEngine(p => setStatus(formatLoadProgress(p), 'busy'));
     setStatus('scoping…', 'busy');
     const chunks = await engine.chat.completions.create({
       model: webllmModel, max_tokens: MAX_TOKENS, temperature: CHAT_TEMPERATURE, stream: true,
@@ -2992,17 +3185,12 @@ async function _startLqlScopingConversation(objective, errorMsg) {
     });
     const { out } = await readStream(chunks, bubble, cursor, funFact);
     cursor.remove();
-    bubble._allBody?.querySelector('.fun-fact')?.remove();
     funFact.remove();
     if (out) {
       const node = document.createElement('span');
       setRendered(node, renderMarkdown(out));
       bubble.appendChild(makeCopyBtn(out));
       bubble.appendChild(makePdfBtn(node));
-      if (bubble._allBody) {
-        bubble._allBody.appendChild(makeCopyBtn(out));
-        bubble._allBody.appendChild(makePdfBtn(bubble._allBody.querySelector('.content') || node));
-      }
     }
     history.push({ role: 'assistant', content: out });
     setStatus('ok', 'ok');
@@ -3022,7 +3210,6 @@ async function _startLqlScopingConversation(objective, errorMsg) {
       el('lql-gen-btn').click();
     });
     bubble.appendChild(rerunBtn);
-    if (bubble._allBody) bubble._allBody.appendChild(rerunBtn.cloneNode(true));
     scrollLog();
   })().catch(err => {
     invalidateEngineOnGpuError(err);
@@ -3094,37 +3281,62 @@ el('lql-gen-btn').addEventListener('click', async () => {
   el('lql-gen-results').innerHTML = '';
 
   try {
-    const genRes = await fetch(BASE_URL + '/lql/generate', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({ objective }),
-    });
+    let data;
+    if (isOnDeviceRiskHunting()) {
+      // On-device: no live tenant datasource grounding (that requires the `lacework` CLI,
+      // server-side only) and no multi-attempt validate/retry loop — one best-effort shot,
+      // asking the model to emit a single LQL query. No USE_CVE_TAB heuristic either; that's
+      // a server-side classifier over Claude's grounded output, not something this smaller
+      // best-effort path can reliably reproduce.
+      statusEl.textContent = 'loading model…';
+      const engine = await getEngine(p => { statusEl.textContent = formatLoadProgress(p); });
+      statusEl.textContent = 'generating…';
+      updateStepper(stepperEl, 10, 20);
+      const completion = await engine.chat.completions.create({
+        messages: [
+          { role: 'system', content: 'You write FortiCNAPP LQL (Lacework Query Language) queries. Reply with ONLY the raw LQL query text for the given objective — no markdown fences, no explanation.' },
+          { role: 'user', content: objective },
+        ],
+        temperature: CHAT_TEMPERATURE,
+        max_tokens: MAX_TOKENS,
+      });
+      const queryText = (completion.choices[0].message.content || '').trim()
+        .replace(/^```[a-z]*\n?/i, '').replace(/```\s*$/, '').trim();
+      if (!queryText) throw new Error('Model returned an empty query.');
+      data = { queryText };
+    } else {
+      const genRes = await fetch(BASE_URL + '/lql/generate', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ objective }),
+      });
 
-    const reader = genRes.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '', data = null;
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        let ev; try { ev = JSON.parse(line); } catch { continue; }
-        if (ev.type === 'attempt') {
-          statusEl.textContent = ev.phase === 'asking_claude' ? 'Chatting with FortiAIScout…'
-                                : ev.phase === 'validating'    ? 'validating query…'
-                                : 'running…';
-          updateStepper(stepperEl, ev.attempt, ev.max);
-        } else if (ev.type === 'error') {
-          throw new Error(ev.error);
-        } else if (ev.type === 'final') {
-          data = ev;
+      const reader = genRes.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          let ev; try { ev = JSON.parse(line); } catch { continue; }
+          if (ev.type === 'attempt') {
+            statusEl.textContent = ev.phase === 'asking_claude' ? 'Chatting with FortiAIScout…'
+                                  : ev.phase === 'validating'    ? 'validating query…'
+                                  : 'running…';
+            updateStepper(stepperEl, ev.attempt, ev.max);
+          } else if (ev.type === 'error') {
+            throw new Error(ev.error);
+          } else if (ev.type === 'final') {
+            data = ev;
+          }
         }
       }
+      if (!data) throw new Error('Stream ended with no result.');
     }
-    if (!data) throw new Error('Stream ended with no result.');
 
     if (data.queryId === 'USE_CVE_TAB') {
       const cveMatch = objective.match(/CVE-\d{4}-\d{4,}/i);
@@ -3178,32 +3390,70 @@ el('lql-gen-btn').addEventListener('click', async () => {
     const resultsEl = document.createElement('div');
     resultsEl.className = 'lql-result-body';
 
+    // renderLqlTable() below clears its container (containerEl.innerHTML = '') before
+    // rendering the table — anything appended to resultsEl before that call gets wiped.
+    // Render the table into its own child node first, then build/prepend the feedback
+    // gate and query preview around it.
+    const tableEl = document.createElement('div');
+
+    if (!rows.length) {
+      tableEl.innerHTML = '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
+    } else {
+      renderLqlTable(tableEl, rows, total, label);
+    }
+    resultsEl.appendChild(tableEl);
+
+    // Snapshot this card's own query text now — _genQueryText is a shared module-level
+    // variable that gets overwritten by the *next* generate call. Reading it later (e.g.
+    // from a button's click handler) instead of capturing it here risked saving whichever
+    // query was most recently generated, mislabeled under an older card's objective/name.
+    const cardQueryText = _genQueryText;
+
+    // Feedback gate: only offer to save this generated query into the LQL/Risk Hunting
+    // tab once the user confirms it actually returned what they intended — a saved query
+    // that silently answered the wrong question is worse than no saved query at all.
+    if (cardQueryText) {
+      const feedback = document.createElement('div');
+      feedback.className = 'lql-row-note';
+      feedback.style.cssText = 'margin:2px 2px 8px;padding:6px 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border:1px solid var(--border);border-radius:6px;';
+      const feedbackLabel = document.createElement('span');
+      feedbackLabel.textContent = 'Did this return exactly what you intended?';
+      const yesBtn = document.createElement('button');
+      yesBtn.className = 'lql-export-btn';
+      yesBtn.textContent = '👍 Yes, save to LQL tab';
+      const noBtn = document.createElement('button');
+      noBtn.className = 'lql-export-btn';
+      noBtn.textContent = '👎 No';
+      yesBtn.addEventListener('click', () => {
+        feedback.remove();
+        buildLqlSaveForm(cardQueryText, objective, resultsEl);
+      }, { once: true });
+      noBtn.addEventListener('click', () => {
+        feedback.textContent = 'Not saved — refine the objective and try again.';
+      }, { once: true });
+      feedback.append(feedbackLabel, yesBtn, noBtn);
+      resultsEl.insertBefore(feedback, tableEl);
+    }
+
     // Show the actual generated LQL — collapsed by default, but the query itself must always
     // be visible somewhere. It was previously captured (_genQueryText) and used to run the
     // query but never rendered anywhere in the UI.
-    if (_genQueryText) {
+    if (cardQueryText) {
       const details = document.createElement('details');
       details.className = 'lql-query-preview';
       const summary = document.createElement('summary');
       summary.textContent = '▶ Generated LQL';
       const pre = document.createElement('pre');
-      pre.textContent = _genQueryText;
-      const saveBtn = document.createElement('button');
-      saveBtn.className = 'lql-export-btn';
-      saveBtn.textContent = 'Save to LQL tab';
-      saveBtn.style.marginTop = '6px';
-      saveBtn.addEventListener('click', () => buildLqlSaveForm(_genQueryText, objective, details));
-      details.append(summary, pre, saveBtn);
-      resultsEl.appendChild(details);
+      pre.textContent = cardQueryText;
+      details.append(summary, pre);
+      resultsEl.insertBefore(details, tableEl);
     }
 
     if (!rows.length) {
-      resultsEl.innerHTML += '<div class="lql-row-note" style="padding:8px 2px">No results.</div>';
       appendResultCard('', `LQL: ${label}`, resultsEl);
       return;
     }
 
-    renderLqlTable(resultsEl, rows, total, label);
     appendResultCard('', `LQL: ${label} — ${statusEl.textContent}`, resultsEl, {
       onAnalyse: () => _runBatchedAnalysis(
         rows, 10,
@@ -3231,8 +3481,16 @@ const LQL_BADGE_RULES = [
   { re: /^(low|pass(ed)?|false|compliant|closed|ok|healthy|private|encrypted)/i, cls: 'lql-badge-ok' },
 ];
 
+// Badges are meant for short enum-like values (true/false, critical/low, compliant/...).
+// A column merely *named* like PUBLIC/ENCRYPT/etc. can still hold a long free-text
+// description (e.g. "S3 bucket is internet exposed via weakened public access block; ...") —
+// forcing that into a non-wrapping .lql-badge pill made it overflow across neighboring
+// cells instead of wrapping like normal text. Only badge-ify short values; anything longer
+// falls through to plain (wrapping) text.
+const LQL_BADGE_MAX_LEN = 24;
+
 function lqlBadgeClassFor(key, val) {
-  if (!LQL_BADGE_KEY_RE.test(key) || !val) return null;
+  if (!LQL_BADGE_KEY_RE.test(key) || !val || val.trim().length > LQL_BADGE_MAX_LEN) return null;
   const rule = LQL_BADGE_RULES.find(r => r.re.test(val.trim()));
   return rule ? rule.cls : 'lql-badge-neutral';
 }

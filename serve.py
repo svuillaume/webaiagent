@@ -35,6 +35,12 @@ from datetime import datetime, timezone, timedelta
 PORT      = 45321
 DIR       = os.path.dirname(os.path.abspath(__file__))
 
+# host.docker.internal only resolves from inside a container; when serve.py runs directly on the
+# host (macOS dev, `python3 serve.py`) a local llama-cpp server started on the same machine is
+# just localhost. /.dockerenv is the standard marker Docker writes into every container's rootfs.
+IN_DOCKER = os.path.exists('/.dockerenv')
+LOCAL_LLM_HOST = 'host.docker.internal' if IN_DOCKER else 'localhost'
+
 HTML_FILE = os.path.join(DIR, 'chatbox.html')
 
 
@@ -67,6 +73,13 @@ def current_browser_gateway_url() -> str:
     """Browser-reachable target — used for /config's gateway_url (the extension fetches this
     directly from the browser)."""
     return DIRECT_UPSTREAM
+
+def _upstream_is_openai_compatible() -> bool:
+    """Which HTTP API shape ANTHROPIC_BASE_URL speaks. Bifrost speaks Anthropic-native
+    /v1/messages+x-api-key. Local servers (llama-cpp) speak OpenAI-compatible /chat/completions."""
+    host = urllib.parse.urlparse(current_upstream()).hostname or ''
+    # Local: localhost:8000
+    return host in ('localhost', '127.0.0.1')
 
 def _write_env_var(key: str, value: str) -> None:
     """Update (or add) a single KEY=value line in .env, preserving everything else."""
@@ -579,6 +592,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.proxy_upstream()
         elif self.path == '/model':
             self.serve_model_update()
+        elif self.path == '/gateway/switch':
+            self.serve_gateway_switch()
         elif self.path == '/mcp/investigate':
             self.serve_mcp_investigate()
         elif self.path == '/mcp/forensic':
@@ -621,20 +636,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_json(200, body)
 
     def serve_gateway_models(self):
-        """List every model Bifrost's /v1/models exposes, for the Admin menu's 'Fetch models'
-        button — lets the user pick from what the gateway actually has instead of guessing a
-        model id. Bifrost normalizes every provider (Claude/GPT/DeepSeek/etc.) behind the same
-        /v1/messages endpoint (x-api-key auth) — there's no separate URL to configure per
-        provider, just a different `model` string, so this only ever needs DIRECT_UPSTREAM."""
+        """List models from gateway (Bifrost /v1/models or local llama-cpp /v1/models), for the
+        Admin menu's 'Fetch models' button — lets the user pick from what the gateway has."""
         if not DIRECT_UPSTREAM or not VIRTUAL_KEY:
             self.send_json(503, json.dumps({'error': 'Gateway URL or virtual key not configured'}).encode())
             return
         try:
-            req = urllib.request.Request(
-                current_upstream().rstrip('/') + '/v1/models',
-                headers={'x-api-key': VIRTUAL_KEY, 'anthropic-version': '2023-06-01'})
+            # Both Bifrost and local llama-cpp use /v1/models endpoint
+            # (llama-cpp mimics OpenAI API)
+            url = current_upstream().rstrip('/') + '/v1/models'
+            req = urllib.request.Request(url)
+            if _upstream_is_openai_compatible():
+                # Local llama-cpp requires a Bearer token (its --api_key)
+                req.add_header('Authorization', f'Bearer {VIRTUAL_KEY}')
+            else:
+                # Bifrost requires x-api-key header
+                req.add_header('x-api-key', VIRTUAL_KEY)
+                req.add_header('anthropic-version', '2023-06-01')
             resp = urllib.request.urlopen(req, timeout=15)
             data = json.loads(resp.read())
+            # Bifrost: data.data[].id; llama-cpp: data.data[].id
             models = sorted(m['id'] for m in data.get('data', []) if m.get('id'))
         except urllib.error.HTTPError as e:
             self.send_json(e.code, json.dumps({'error': e.read().decode()[:400]}).encode())
@@ -662,6 +683,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
         except OSError:
             pass  # in-memory update still applies even if the .env write fails (e.g. read-only mount)
         self.send_json(200, json.dumps({'model': MODEL}).encode())
+
+    def serve_gateway_switch(self):
+        """Switch server-side gateway between Bifrost (cloud) and Local (llama-cpp)."""
+        global DIRECT_UPSTREAM, VIRTUAL_KEY
+        try:
+            payload = json.loads(self._read_body() or '{}')
+        except json.JSONDecodeError:
+            self.send_json(400, json.dumps({'error': 'Expected JSON {gateway}'}).encode())
+            return
+        gateway = (payload.get('gateway') or '').strip().lower()
+        if gateway not in ('bifrost', 'local'):
+            self.send_json(400, json.dumps({'error': 'gateway must be "bifrost" or "local"'}).encode())
+            return
+
+        if gateway == 'bifrost':
+            DIRECT_UPSTREAM = env.get('BIFROST_BASE_URL', 'https://bifrost.fabriclab.ca/anthropic')
+            VIRTUAL_KEY = env.get('BIFROST_API_KEY', '')
+        else:  # local llama-cpp (host.docker.internal from inside a container, localhost otherwise)
+            DIRECT_UPSTREAM = f'http://{LOCAL_LLM_HOST}:8000'
+            VIRTUAL_KEY = 'token-abc123'
+
+        try:
+            _write_env_var('ANTHROPIC_BASE_URL', DIRECT_UPSTREAM)
+            _write_env_var('BIFROST_VIRTUAL_KEY', VIRTUAL_KEY)
+        except OSError:
+            pass  # in-memory update still applies even if the .env write fails
+
+        self.send_json(200, json.dumps({'gateway': gateway, 'upstream': DIRECT_UPSTREAM}).encode())
 
     def serve_analysis_generate(self):
         """Server-side, non-streaming report-text generation for the CVE/Unified Attack Threat
@@ -1130,7 +1179,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                         'timeFilter': tf,
                         'filters': [
                             {'field': 'severity', 'expression': 'eq', 'value': sev},
-                            {'field': 'status',   'expression': 'eq', 'value': 'Active'},
+                            {'field': 'status',   'expression': 'ne', 'value': 'Fixed'},
                             {'field': 'mid',      'expression': 'in', 'values': mids},
                         ],
                         'returns': ['mid', 'severity', 'vulnId', 'featureKey', 'fixInfo', 'status', 'machineTags'],
@@ -1483,7 +1532,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                             'endTime':   w_end.strftime('%Y-%m-%dT%H:%M:%SZ'),
                         },
                         'filters': [
-                            {'field': 'status',   'expression': 'eq', 'value': 'Active'},
+                            {'field': 'status',   'expression': 'ne', 'value': 'Fixed'},
                             {'field': 'severity', 'expression': 'eq', 'value': sev},
                             {'field': 'vulnId',   'expression': 'eq', 'value': cve_id},
                         ],
@@ -2194,6 +2243,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         system_prompt = """\
 You are a FortiCNAPP LQL (Lacework Query Language) expert. Generate a single valid LQL query for the given objective.
 
+CRITICAL: Your ENTIRE response must be valid JSON. Start with { and end with }. Nothing else.
+
+Response format (REQUIRED):
+```json
+{"queryId": "Custom_...", "queryText": "{ source { DATASOURCE } filter { conditions } return distinct { columns } }"}
+```
+
+RULES (NON-NEGOTIABLE):
+1. DO NOT ask any questions — answer immediately
+2. DO NOT explain or provide preamble
+3. DO NOT output any text outside the JSON object
+4. Fill in all three fields: queryId, queryText, and (if CVE) add "note"
+5. Make reasonable assumptions for ambiguities:
+   - Default cloud: AWS
+   - Default region scope: all (unless "outside of" or region-specific)
+   - Default timeframe: 7 days
+   - Default account scope: all
+6. Output ONLY the JSON, starting with { and ending with }
+
+Examples of REQUIRED format:
+{"queryId": "Custom_AWS_EC2_ByRegion", "queryText": "{ source { LW_CFG_AWS_EC2_INSTANCES } filter { RESOURCE_REGION NOT LIKE 'ca-%' } return distinct { ACCOUNT_ALIAS, ACCOUNT_ID, RESOURCE_REGION, RESOURCE_CONFIG:State.Name::String as STATE } }"}
+{"queryId": "USE_CVE_TAB", "queryText": "", "note": "Use CVE tab instead"}
+
+NOW GENERATE THE RESPONSE — ONLY JSON, NO PREAMBLE.
+
 ━━ CVE ROUTING RULE ━━
 This rule is ONLY about software vulnerability/patch data — a specific CVE ID, "vulnerable hosts/images",
 or "patch exposure/available". If the objective literally names or clearly means one of those, do NOT
@@ -2249,6 +2323,10 @@ CRITICAL RULES — violations cause parse errors:
   GOOD: RESOURCE_REGION LIKE 'ca-%'          (prefix match for all Canada regions)
   GOOD: RESOURCE_REGION = 'ca-central-1'     (exact match)
   For multiple regions use: RESOURCE_REGION IN ('ca-central-1', 'ca-west-1')
+  For NEGATION (e.g., "outside of ca-central-1"): use NOT LIKE or !=
+  GOOD: RESOURCE_REGION != 'ca-central-1'    (exclude one region)
+  GOOD: RESOURCE_REGION NOT LIKE 'ca-%'      (exclude all Canada regions)
+  Use AND to combine: RESOURCE_REGION NOT LIKE 'ca-%' AND RESOURCE_REGION NOT LIKE 'us-%'
 
 TIME COMPARISONS — ONLY sec_to_timestamp(epoch) works:
   sec_to_timestamp(n)  → converts a hardcoded Unix epoch number to a Timestamp for comparison
@@ -2553,19 +2631,20 @@ The "queryText" value must be raw LQL only — never wrap it in ```, <code>, <pr
             {'role': 'user', 'content': f'<system>\n{system_prompt}\n</system>\n\nObjective: {objective}'},
         ]
         def _call_claude(msgs):
-            # Anthropic-native gateways speak /v1/messages + x-api-key; Ollama and other
-            # OpenAI-compatible gateways speak /chat/completions + Bearer auth. MODEL is the
-            # only signal we have for which kind of upstream ANTHROPIC_BASE_URL points at.
-            if MODEL.startswith('claude'):
-                body = json.dumps({'model': MODEL or 'claude-haiku-4-5', 'max_tokens': 2048, 'messages': msgs}).encode()
-                r = urllib.request.Request(
-                    current_upstream().rstrip('/') + '/v1/messages', data=body, method='POST',
-                    headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY, 'anthropic-version': '2023-06-01'})
-            else:
+            # Anthropic-native gateways (Bifrost, real Anthropic API) speak /v1/messages +
+            # x-api-key regardless of which model is configured; only Ollama-style local
+            # gateways speak /chat/completions + Bearer auth. Decided by the gateway host,
+            # not by MODEL — see _upstream_is_openai_compatible()'s docstring.
+            if _upstream_is_openai_compatible():
                 body = json.dumps({'model': MODEL, 'max_tokens': 2048, 'messages': msgs}).encode()
                 r = urllib.request.Request(
                     current_upstream().rstrip('/') + '/chat/completions', data=body, method='POST',
                     headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {VIRTUAL_KEY}'})
+            else:
+                body = json.dumps({'model': MODEL or 'claude-haiku-4-5', 'max_tokens': 2048, 'messages': msgs}).encode()
+                r = urllib.request.Request(
+                    current_upstream().rstrip('/') + '/v1/messages', data=body, method='POST',
+                    headers={'Content-Type': 'application/json', 'x-api-key': VIRTUAL_KEY, 'anthropic-version': '2023-06-01'})
             # 240s, not 60s: the ~24k-token datasource-catalog system prompt (every /lql/generate
             # call injects all ~2340 real datasource names, see _all_lql_datasources_text) is fine
             # for cloud Claude/Haiku but measured ~4 minutes on a local Ollama 7B model on CPU —

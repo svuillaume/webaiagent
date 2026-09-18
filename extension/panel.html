@@ -18,9 +18,9 @@
   --dim:        #4a5166;
   --text:       #e2e5ef;
   --muted:      #7b859a;
-  --accent:     #ee3124;
-  --accent-d:   #c41230;
-  --accent-bg:  rgba(238,49,36,.08);
+  --accent:     #da291c; /* Fortinet Red — PMS 485 C */
+  --accent-d:   #ae2116; /* Red S1 */
+  --accent-bg:  rgba(218,41,28,.08);
   --ok:         #3cb17e; /* Fortinet Green — PMS 7724 C */
   --ok-bg:      rgba(60,177,126,.1);
   --warn:       #fbbf24;
@@ -28,8 +28,8 @@
   --err-bg:     rgba(248,113,113,.08);
   --blue:       #60a5fa;
   --blue-bg:    rgba(96,165,250,.08);
-  --purple:     #9063cd; /* Fortinet Purple — PMS 265 C */
-  --purple-bg:  rgba(144,99,205,.1);
+  --brand2:     #307fe2; /* Fortinet Blue — PMS 2727 C */
+  --brand2-bg:  rgba(48,127,226,.1);
 }
 
 @media (prefers-color-scheme: light) {
@@ -42,9 +42,9 @@
     --dim:        #9aa0b0;
     --text:       #1a1d2e;
     --muted:      #5a6070;
-    --accent:     #ee3124;
-    --accent-d:   #c41230;
-    --accent-bg:  rgba(238,49,36,.06);
+    --accent:     #da291c; /* Fortinet Red — PMS 485 C */
+    --accent-d:   #ae2116; /* Red S1 */
+    --accent-bg:  rgba(218,41,28,.06);
     --ok:         #3cb17e; /* Fortinet Green — PMS 7724 C */
     --ok-bg:      rgba(60,177,126,.08);
     --warn:       #d97706;
@@ -52,8 +52,8 @@
     --err-bg:     rgba(220,38,38,.06);
     --blue:       #2563eb;
     --blue-bg:    rgba(37,99,235,.06);
-    --purple:     #9063cd; /* Fortinet Purple — PMS 265 C */
-    --purple-bg:  rgba(144,99,205,.08);
+    --brand2:     #307fe2; /* Fortinet Blue — PMS 2727 C */
+    --brand2-bg:  rgba(48,127,226,.06);
   }
 }
 
@@ -67,15 +67,9 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-/* ── Row 1: Config bar ───────────────────────────────────────────────────── */
-/* No longer a visible bar — only holds hidden gateway-credential inputs now that gateway/model
-   selects and the status dot moved into the action bar / Admin menu. Zero padding so it doesn't
-   render as an empty strip (all children are display:none). */
-#config-bar {
-  display: flex;
-  align-items: center;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 .brand {
@@ -87,32 +81,6 @@ body {
   white-space: nowrap;
   margin-right: 6px;
 }
-
-#config-bar label {
-  font-size: 10px;
-  color: var(--dim);
-  white-space: nowrap;
-  text-transform: uppercase;
-  letter-spacing: .5px;
-  font-weight: 600;
-}
-
-#config-bar input, #config-bar select {
-  font-family: var(--mono);
-  font-size: 11px;
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  color: var(--text);
-  padding: 4px 8px;
-  border-radius: 6px;
-  outline: none;
-  transition: border-color .15s;
-}
-#config-bar input:focus, #config-bar select:focus { border-color: var(--accent); }
-#gateway   { width: 88px;  font-family: var(--sans); font-size: 11px; }
-#url-input { width: 150px; }
-#key-input { width: 110px; }
-#model     { width: 138px; font-family: var(--sans); font-size: 11px; }
 
 /* Status dot: ::before so setStatus(text, cls) works unchanged */
 #status {
@@ -141,20 +109,6 @@ body {
 #status.busy { color: var(--muted); }
 #status.busy::before { background: var(--warn); animation: pulse 1.2s ease-in-out infinite; }
 
-.headroom-badge {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--muted);
-  background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 2px 8px;
-  white-space: nowrap;
-  flex-shrink: 0;
-  cursor: default;
-}
-#routing-badge { cursor: pointer; margin-left: auto; transition: border-color .12s, background .12s; }
-#routing-badge:hover { background: var(--surface3); border-color: var(--dim); }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
 
 /* ── Row 2: Action bar ───────────────────────────────────────────────────── */
@@ -251,6 +205,26 @@ body {
 .fcnapp-item.success:hover{ color: var(--ok);     background: var(--ok-bg); }
 .fcnapp-item.danger:hover { color: var(--err);    background: var(--err-bg); }
 .fcnapp-sep { height: 1px; background: var(--border); margin: 4px 2px; }
+.fcnapp-tenant {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--muted);
+  padding: 5px 10px 7px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.fcnapp-tenant::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  flex-shrink: 0;
+}
+.fcnapp-tenant strong { color: var(--text); font-weight: 700; }
 
 /* ── Admin dropdown: gateway, model, TokenSaving, community ──────────────────── */
 #admin-wrap { position: relative; flex-shrink: 0; }
@@ -296,13 +270,6 @@ body {
   width: 100%;
 }
 .admin-select:focus { border-color: var(--accent); }
-.admin-item.headroom-badge {
-  width: 100%;
-  text-align: left;
-  border-radius: 6px;
-  padding: 7px 10px;
-  box-sizing: border-box;
-}
 /* ── SBOM format picker sub-menu ─────────────────────────────────────────── */
 #sbom-picker {
   display: none;
@@ -585,9 +552,7 @@ body {
 /* ── Compliance drawer ───────────────────────────────────────────────────── */
 #compliance-panel .drawer-header { color: var(--ok); }
 
-/* ── CVE drawer ──────────────────────────────────────────────────────────── */
-#cve-panel { max-height: 440px; }
-#cve-panel .drawer-header { color: var(--err); }
+/* ── CVE / Attack Surface tab (inside Risk Hunting drawer) ───────────────── */
 #cve-input { text-transform: uppercase; width: 152px; }
 #cve-input:focus { border-color: var(--err); }
 #cve-search { background: var(--err); }
@@ -683,14 +648,13 @@ body {
 .lql-table tbody tr:hover { background: var(--accent-bg); }
 
 .lql-table tbody td {
-  padding: 5px 10px;
+  padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
   vertical-align: top;
-  max-width: 260px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 340px;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .lql-table tbody tr:last-child td { border-bottom: none; }
@@ -700,6 +664,66 @@ body {
   text-decoration: none;
 }
 .lql-table a.lql-link:hover { text-decoration: underline; }
+
+/* Long cell values: show a preview + inline expand toggle instead of silently
+   truncating with only a hover tooltip (which is easy to miss entirely). */
+.lql-cell-toggle {
+  display: block;
+  margin-top: 3px;
+  font: 600 9.5px/1 var(--sans);
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  color: var(--accent);
+  cursor: pointer;
+  user-select: none;
+}
+.lql-cell-toggle:hover { text-decoration: underline; }
+
+/* Status/severity-ish values rendered as small colored pills instead of plain text */
+.lql-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font: 700 9.5px/1.6 var(--sans);
+  letter-spacing: .03em;
+  text-transform: uppercase;
+  white-space: normal;
+  max-width: 100%;
+}
+.lql-badge-crit { background: rgba(220, 38, 38, .18); color: #f87171; }
+.lql-badge-warn { background: rgba(217, 119, 6, .18); color: #fbbf24; }
+.lql-badge-ok   { background: var(--ok-bg); color: var(--ok); }
+.lql-badge-neutral { background: var(--surface3); color: var(--muted); }
+
+/* Optional per-row detail expansion for very wide records */
+.lql-row-detail-toggle {
+  cursor: pointer;
+}
+.lql-row-detail-toggle:hover td { background: var(--accent-bg); }
+.lql-row-detail {
+  background: var(--surface2);
+}
+.lql-row-detail td {
+  padding: 10px 14px;
+}
+.lql-row-detail-grid {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 5px 14px;
+  font-size: 11px;
+}
+.lql-row-detail-grid dt {
+  color: var(--dim);
+  font: 700 9.5px/1.6 var(--sans);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  white-space: nowrap;
+}
+.lql-row-detail-grid dd {
+  margin: 0;
+  color: var(--text);
+  word-break: break-word;
+}
 
 .lql-export-bar {
   display: flex;
@@ -726,6 +750,20 @@ body {
   font-size: 10px;
   color: var(--dim);
   font-style: italic;
+}
+
+.lql-save-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+.lql-save-form .drawer-input {
+  flex: 1 1 160px;
+  min-width: 120px;
 }
 
 #lql-gen-preview pre,
@@ -781,32 +819,7 @@ body {
 .lql-pane { display: none; }
 .lql-pane.active { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
-/* ── Chat log tabs ───────────────────────────────────────────────────────── */
-#log-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 5px 10px 0;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  flex-shrink: 0;
-}
-.log-tab {
-  font: 600 10px/1 var(--sans);
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  padding: 5px 12px 6px;
-  border: none;
-  border-bottom: 2px solid transparent;
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: color .12s, border-color .12s;
-  border-radius: 4px 4px 0 0;
-}
-.log-tab:hover  { color: var(--text); }
-.log-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
-
-/* ── Chat log panes ──────────────────────────────────────────────────────── */
+/* ── Chat log pane ───────────────────────────────────────────────────────── */
 .log-pane {
   display: none;
   flex: 1;
@@ -863,17 +876,19 @@ body {
 .turn-user .content {
   border-left-color: var(--accent);
 }
-/* AI content keeps its light card + report color language for PDF export consistency, but now
-   carries a Fortinet Purple accent bar — the "AI box" brand marker. */
+/* AI content renders as a terminal/TUI-style block — monospace, theme-native colors —
+   instead of a light report card, matching the plainer chat output. */
 .turn-ai .content {
-  border-left: 3px solid var(--purple);
-  background: #f8f9fa;
-  color: #111111;
-  border-top: 1px solid #d0d5dd;
-  border-right: 1px solid #d0d5dd;
-  border-bottom: 1px solid #d0d5dd;
+  border-left: 3px solid var(--brand2);
+  background: var(--surface);
+  color: var(--text);
+  border-top: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
   border-radius: 6px;
   padding: 9px 12px;
+  font-family: var(--mono);
+  font-size: 12.5px;
 }
 .turn-system .content {
   border-left: none;
@@ -899,7 +914,7 @@ body {
   user-select: none;
 }
 .turn-user .turn-label  { color: var(--accent); }
-.turn-ai   .turn-label  { color: var(--purple); }
+.turn-ai   .turn-label  { color: var(--brand2); }
 
 /* ── Content wrapper ── */
 .bubble-col {
@@ -918,9 +933,9 @@ body {
   border-radius: 4px;
 }
 .turn-ai .content code {
-  background: #e8edf2;
-  color: var(--purple);
-  border: 1px solid #c8d0da;
+  background: var(--surface2);
+  color: var(--brand2);
+  border: 1px solid var(--border);
 }
 .content pre {
   background: var(--surface2);
@@ -950,36 +965,33 @@ a.ext-link:hover { color: var(--accent-d); }
 .turn-ai .content h2.md-h,
 .turn-ai .content h3.md-h,
 .turn-ai .content h4.md-h {
-  font-family: var(--sans);
+  font-family: var(--mono);
   font-weight: 700;
-  color: #ffffff;
+  color: var(--text);
   margin: 14px 0 4px;
   padding-bottom: 4px;
-  border-bottom: 1px solid #333;
+  border-bottom: 1px solid var(--border);
   line-height: 1.3;
 }
-.turn-ai .content h2.md-h,
-.turn-ai .content h3.md-h,
-.turn-ai .content h4.md-h { border-bottom-color: #d0d5dd; }
-.turn-ai .content h2.md-h { font-size: 15px;   letter-spacing: .2px; color: var(--purple); }
-.turn-ai .content h3.md-h { font-size: 13.5px; color: var(--purple); border-bottom: none; margin-bottom: 2px; }
-.turn-ai .content h4.md-h { font-size: 13px;   color: #444444; border-bottom: none; font-weight: 600; }
-.turn-ai .content p  { margin: 3px 0; color: #111111; }
+.turn-ai .content h2.md-h { font-size: 14px;   letter-spacing: .2px; color: var(--brand2); }
+.turn-ai .content h3.md-h { font-size: 13px;   color: var(--brand2); border-bottom: none; margin-bottom: 2px; }
+.turn-ai .content h4.md-h { font-size: 12.5px; color: var(--muted); border-bottom: none; font-weight: 600; }
+.turn-ai .content p  { margin: 3px 0; color: var(--text); }
 .turn-ai .content br { display: block; margin: 4px 0; content: ''; }
 .turn-ai .content ul,
-.turn-ai .content ol { margin: 4px 0 4px 18px; padding: 0; color: #111111; }
+.turn-ai .content ol { margin: 4px 0 4px 18px; padding: 0; color: var(--text); }
 .turn-ai .content li { margin: 2px 0; }
 .turn-ai .content hr {
   border: none;
-  border-top: 1px solid #d0d5dd;
+  border-top: 1px solid var(--border);
   margin: 10px 0;
 }
 .turn-ai .content blockquote {
-  border-left: 3px solid #cc0000;
+  border-left: 3px solid var(--accent);
   margin: 6px 0;
   padding: 4px 10px;
-  color: #555555;
-  background: rgba(200,0,0,.05);
+  color: var(--muted);
+  background: var(--accent-bg);
   border-radius: 0 6px 6px 0;
   font-style: italic;
 }
@@ -987,25 +999,25 @@ a.ext-link:hover { color: var(--accent-d); }
   border-collapse: collapse;
   width: 100%;
   margin: 8px 0;
-  font-size: 12.5px;
+  font-size: 12px;
 }
 .turn-ai .content th {
-  background: var(--purple);
+  background: var(--brand2);
   color: #ffffff;
   font-weight: 700;
   text-align: left;
   padding: 6px 9px;
-  border: 1px solid #b0b8c4;
+  border: 1px solid var(--border);
   white-space: nowrap;
 }
 .turn-ai .content td {
   padding: 5px 9px;
-  border: 1px solid #d0d5dd;
+  border: 1px solid var(--border);
   vertical-align: top;
-  color: #111111;
+  color: var(--text);
 }
-.turn-ai .content tr:nth-child(even) td { background: #f0f4f8; }
-.turn-ai .content td strong { color: #cc0000; }
+.turn-ai .content tr:nth-child(even) td { background: var(--surface2); }
+.turn-ai .content td strong { color: var(--accent); }
 .turn-ai .content pre[data-lang]::before {
   content: attr(data-lang);
   display: block;
@@ -1022,6 +1034,7 @@ a.ext-link:hover { color: var(--accent-d); }
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
+  flex-shrink: 0;
   background: var(--surface2);
   animation: fadein .15s ease;
 }
@@ -1063,7 +1076,7 @@ a.ext-link:hover { color: var(--accent-d); }
   font-size: 11px;
 }
 .fg-search-link a {
-  color: var(--purple);
+  color: var(--brand2);
   font-weight: 600;
   text-decoration: none;
 }
@@ -1081,63 +1094,74 @@ a.ext-link:hover { color: var(--accent-d); }
 }
 .fg-outbreak-card strong { color: #cc0000; display: block; margin-bottom: 4px; }
 .fg-outbreak-item { margin: 3px 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.fg-outbreak-item a { color: var(--purple); text-decoration: none; font-weight: 600; }
+.fg-outbreak-item a { color: var(--brand2); text-decoration: none; font-weight: 600; }
 .fg-outbreak-item a:hover { text-decoration: underline; }
 .fg-risk { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
 .fg-risk-critical { background: #cc0000; color: #fff; }
 .fg-risk-high     { background: #e65c00; color: #fff; }
 .fg-risk-medium   { background: #f5a623; color: #000; }
-.fg-risk-low      { background: #4caf50; color: #fff; }
+.fg-risk-low      { background: #4a9d63; color: #fff; }
 .fg-date { color: #888; font-size: 10px; margin-left: auto; }
 
 /* ── Security report visual components ───────────────────────────────────── */
 /* Minimal, engineering-focused: a table for resource findings + a sparing inline badge. */
 
-/* Findings table — same visual language as .lql-table for consistency */
+/* Findings table — clean, airy, minimal borders (row separators only) */
 .rpt-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 11px;
-  margin: 8px 0;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+  font-size: 11.5px;
+  margin: 10px 0;
+  border-radius: 8px;
   overflow: hidden;
+  box-shadow: 0 0 0 1px var(--border);
 }
 .rpt-table th {
-  background: var(--surface3);
-  color: var(--dim);
-  font-weight: 700;
+  background: var(--surface2);
+  color: var(--muted);
+  font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: .4px;
+  letter-spacing: .5px;
   font-size: 9.5px;
-  padding: 6px 10px;
+  padding: 9px 12px;
   text-align: left;
   border-bottom: 1px solid var(--border);
 }
 .rpt-table td {
-  padding: 5px 10px;
+  padding: 9px 12px;
   border-bottom: 1px solid var(--border);
   color: var(--text);
   vertical-align: top;
+  line-height: 1.5;
 }
-.rpt-table tbody tr:nth-child(even) { background: var(--surface2); }
 .rpt-table tbody tr:last-child td { border-bottom: none; }
+.rpt-table tbody tr:hover td { background: var(--surface2); }
 
-/* Severity badge — muted by default; colour reserved for critical/high only */
+/* Severity badge — soft tinted pill with a dot, not a solid color block */
 .rpt-badge {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   font-size: 10px;
-  font-weight: 700;
-  padding: 2px 6px;
-  border-radius: 4px;
+  font-weight: 600;
+  padding: 2px 8px 2px 6px;
+  border-radius: 100px;
   text-transform: uppercase;
   letter-spacing: .3px;
   vertical-align: middle;
-  border: 1px solid var(--border);
+  background: var(--surface3);
   color: var(--muted);
 }
-.rpt-badge.critical { background: #ee3124; color: #fff; border-color: #ee3124; }
-.rpt-badge.high     { background: #e65c00; color: #fff; border-color: #e65c00; }
+.rpt-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+.rpt-badge.critical { background: var(--err-bg); color: var(--err); }
+.rpt-badge.high     { background: rgba(251,191,36,.14); color: var(--warn); }
 
 /* Risk matrix — 5×5 heat grid */
 .rpt-matrix {
@@ -1178,7 +1202,7 @@ a.ext-link:hover { color: var(--accent-d); }
   padding: 2px !important;
   cursor: default;
 }
-.rpt-matrix td.cell-low    { background: #2d5a27; color: #a3e8a0; }
+.rpt-matrix td.cell-low    { background: #26402a; color: #8fbf96; }
 .rpt-matrix td.cell-med    { background: #6b4c10; color: #fcd68a; }
 .rpt-matrix td.cell-high   { background: #7a2a10; color: #ffb899; }
 .rpt-matrix td.cell-crit   { background: #7a1010; color: #ffaaaa; }
@@ -1244,12 +1268,12 @@ a.ext-link:hover { color: var(--accent-d); }
   align-self: flex-start;
 }
 .rc-pdf-btn {
-  background: var(--purple) !important;
+  background: var(--brand2) !important;
   color: #fff !important;
-  border-color: var(--purple) !important;
+  border-color: var(--brand2) !important;
 }
 .rc-pdf-btn:hover {
-  background: #7c4fc0 !important;
+  background: #2b6dc4 !important;
   color: #fff !important;
 }
 .cs-result-body, .cve-result-body, .lql-result-body {
@@ -1270,6 +1294,7 @@ a.ext-link:hover { color: var(--accent-d); }
   border: 1px solid var(--border);
   border-radius: 10px;
   overflow: hidden;
+  flex-shrink: 0;
   background: var(--surface2);
   font-size: 11px;
   animation: fadein .15s ease;
@@ -1311,51 +1336,70 @@ a.ext-link:hover { color: var(--accent-d); }
   white-space: nowrap;
 }
 .gh-files {
-  padding: 8px 12px;
+  padding: 6px 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  max-height: 160px;
+  max-height: 320px;
   overflow-y: auto;
 }
 .gh-files::-webkit-scrollbar { width: 3px; }
 .gh-files::-webkit-scrollbar-thumb { background: var(--dim); border-radius: 2px; }
-.gh-row {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-}
-.gh-dir {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--muted);
-  margin-right: 1px;
-}
-.gh-file {
-  font-family: var(--mono);
-  font-size: 10px;
-  color: var(--text);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 1px 6px;
-}
 
-.gh-cat + .gh-cat { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.gh-cat { margin-top: 6px; }
+.gh-cat + .gh-cat { padding-top: 8px; border-top: 1px solid var(--border); }
 .gh-cat-label {
   display: flex; align-items: center; gap: 6px;
-  font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
-  color: var(--muted); margin-bottom: 4px;
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
 }
+.gh-cat-label::-webkit-details-marker { display: none; }
+.gh-cat-label::before {
+  content: '▸';
+  font-size: 9px;
+  color: var(--dim);
+  transition: transform .12s;
+}
+.gh-cat[open] > .gh-cat-label::before { transform: rotate(90deg); }
+.gh-cat-icon { font-size: 12px; }
 .gh-cat-count {
   font-family: var(--mono); font-weight: 700; font-size: 9px;
   border-radius: 8px; padding: 0 6px;
+  margin-left: auto;
 }
-.gh-cat-sast  .gh-cat-count { color: var(--accent); background: rgba(238,49,36,.1); }
+.gh-cat-sast  .gh-cat-count { color: var(--accent); background: rgba(218,41,28,.1); }
 .gh-cat-iac   .gh-cat-count { color: var(--warn);   background: rgba(251,191,36,.12); }
 .gh-cat-sca   .gh-cat-count { color: var(--ok);     background: var(--ok-bg); }
 .gh-cat-other .gh-cat-count { color: var(--dim);    background: var(--surface3); }
+
+.gh-cat-body { padding: 4px 0 2px 4px; }
+.gh-dirgroup + .gh-dirgroup { margin-top: 6px; }
+.gh-dir {
+  display: flex; align-items: center; gap: 5px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+.gh-dir-icon { font-size: 11px; }
+.gh-filelist {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 16px;
+  border-left: 1px solid var(--border);
+  padding-left: 8px;
+}
+.gh-file {
+  display: flex; align-items: center; gap: 6px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--text);
+  padding: 2px 0;
+}
+.gh-file-icon { font-size: 11px; flex-shrink: 0; }
 
 .cursor {
   display: inline-block;
@@ -1364,6 +1408,13 @@ a.ext-link:hover { color: var(--accent-d); }
   vertical-align: text-bottom;
   border-radius: 1px;
   animation: blink .85s step-end infinite;
+}
+.fun-fact {
+  display: block;
+  color: var(--dim);
+  font-style: italic;
+  font-size: 0.85em;
+  margin-bottom: 4px;
 }
 .search-marker {
   color: var(--dim);
@@ -1433,46 +1484,37 @@ a.ext-link:hover { color: var(--accent-d); }
 </head>
 <body>
 
-<div id="config-bar">
-  <label for="url-input" style="display:none">url</label>
-  <input id="url-input" type="url" placeholder="https://bifrost.xxx" autocomplete="off" style="display:none" />
-  <label id="key-label" for="key-input" style="display:none">key</label>
-  <input id="key-input" type="password" placeholder="sk-bf-…" autocomplete="off" style="display:none" />
-  <input id="key2-input" type="hidden" />
-</div>
-
 <div id="action-bar">
-  <button id="read-page" class="chip"         title="Translate the selected text on the page to English (no-op if it's already English)">🌐 Translate</button>
-  <button id="tldr"      class="chip"         title="Summarize current page">📝 TL;DR</button>
+  <button id="read-page" class="chip"         title="Select text on the page (or a PDF) and click Explain to bring it into the chat">Explain</button>
+  <button id="tldr"      class="chip"         title="Summarize current page">TL;DR</button>
   <div class="sep"></div>
   <div id="fcnapp-wrap">
     <button id="fcnapp-btn" class="chip accent" title="FortiCNAPP tools"> FortiCNAPP <span class="caret">▼</span></button>
     <div id="fcnapp-menu">
+      <div id="fcnapp-tenant" class="fcnapp-tenant" style="display:none"></div>
       <button id="codesec"    class="fcnapp-item accent"  title="SCA + SAST scan on code found on this page&#10;&#10;SAST languages: Go, Java, JavaScript, PHP, Python, TypeScript&#10;&#10;SCA languages: .NET (deps.json, packages.lock.json), C/C++ (conan.lock), Go (go.mod, go.sum), Java (Gradle, Maven, Bazel), Node.js (package-lock.json, pnpm-lock.yaml, yarn.lock), PHP (composer.lock), Python (requirements.txt, Pipfile.lock, poetry.lock, uv.lock), Ruby (Gemfile.lock), Rust (Cargo.lock)"> CodeScan</button>
       <button id="sbom" class="fcnapp-item accent" title="Generate SBOM — choose format before generating"> SBOM Gen</button>
       <button id="compliance" class="fcnapp-item success" title="Generate compliance PDF report"> Compliance Report</button>
       <button id="lql"        class="fcnapp-item accent"  title="Run LQL queries against your tenant"> Risk Hunting</button>
-      <button id="cve-btn"    class="fcnapp-item danger"  title="CVE attack surface across hosts &amp; containers"> Unified Attack Threat Surface</button>
     </div>
   </div>
-  <button id="faz-btn" class="chip lw-disabled" title="FortiAnalyzer — coming soon. Correlated SOC analytics across the Security Fabric.">📈 FAZ</button>
-  <button id="forticasb-btn" class="chip lw-disabled" title="FortiCASB-SSPM — coming soon. SaaS security posture: Shadow IT discovery, OAuth app risk, M365/GWS/Salesforce posture.">☁️ FortiCASB-SSPM</button>
+  <button id="forticasb-btn" class="chip lw-disabled" title="FortiCASB — coming soon. SaaS security posture: Shadow IT discovery, OAuth app risk, M365/GWS/Salesforce posture.">FortiCASB</button>
   <div class="sep"></div>
   <div id="admin-wrap">
-    <button id="admin-btn" class="chip" title="Gateway, model, TokenSaving, community"><span id="routing-dot" class="admin-dot"></span> Admin <span class="caret">▼</span></button>
+    <button id="admin-btn" class="chip" title="On-device model info"> Admin <span class="caret">▼</span></button>
     <div id="admin-menu">
-      <div class="admin-menu-label">AI Gateway</div>
-      <select id="gateway" class="admin-select" title="AI Gateway">
-        <option value="bifrost">⚡ Bifrost</option>
-        <option value="portkey">Portkey</option>
-        <option value="litellm">LiteLLM</option>
-        <option value="helicone">Helicone</option>
+      <div class="admin-menu-label">LLM Model — on-device (WebGPU)</div>
+      <select id="model-select" class="admin-item" style="font-size:11px;text-align:center;margin-top:2px"></select>
+      <div class="admin-menu-label" style="margin-top:8px">Server</div>
+      <select id="server-select" class="admin-item" style="font-size:11px;text-align:center;margin-top:2px">
+        <option value="bifrost">Bifrost</option>
+        <option value="local">Local (llama-cpp)</option>
+        <option value="webgpu">On-device (WebGPU)</option>
       </select>
-      <div class="admin-menu-label">LLM Model</div>
-      <select id="model" class="admin-select">
-        <option value="qwen2.5-coder:7b" selected>qwen2.5-coder:7b</option>
-      </select>
-      <span id="gateway-status" class="admin-item" style="font-size:11px;color:var(--ok);text-align:center;margin-top:2px">✓ Ollama (qwen2.5-coder)</span>
+      <div class="admin-menu-label" style="margin-top:8px">LLM Model — server-side</div>
+      <button id="gateway-models-fetch" class="admin-item" style="font-size:11px;text-align:center;margin-top:2px">⟳ Fetch models</button>
+      <select id="gateway-model-select" class="admin-item" style="font-size:11px;text-align:center;margin-top:2px;display:none"></select>
+      <span id="gateway-models-status" class="admin-item" style="font-size:10px;text-align:center;color:var(--muted)"></span>
     </div>
   </div>
   <span id="status">—</span>
@@ -1489,7 +1531,7 @@ a.ext-link:hover { color: var(--accent-d); }
 
 <div id="compliance-panel" class="drawer">
   <div class="drawer-header">
-    <span>📋 Compliance Report</span>
+    <span>Compliance Report</span>
     <span class="drawer-close" id="compliance-close">✕</span>
   </div>
   <div class="drawer-body">
@@ -1499,25 +1541,6 @@ a.ext-link:hover { color: var(--accent-d); }
   </div>
 </div>
 
-<div id="cve-panel" class="drawer">
-  <div class="drawer-header">
-    <span>🚨 Unified Attack Threat Surface</span>
-    <span class="drawer-close" id="cve-close">✕</span>
-  </div>
-  <div class="drawer-body">
-    <input id="cve-input" class="drawer-input" type="text" placeholder="CVE-2021-44228" autocomplete="off" spellcheck="false" />
-    <select id="cve-days" class="drawer-select" style="flex:0;min-width:0;width:90px" title="Wider windows are split into 7-day chunks server-side and merged">
-      <option value="7"  selected>7 days</option>
-      <option value="14">14 days</option>
-      <option value="30">30 days</option>
-    </select>
-    <button id="cve-search"  class="drawer-btn primary">🔎 Search</button>
-    <button id="cve-analyse" class="drawer-btn secondary" style="display:none">🤖 Analyse</button>
-    <span id="cve-status" class="drawer-status"></span>
-  </div>
-  <div id="cve-results" class="drawer-results"></div>
-</div>
-
 <div id="lql-panel" class="drawer">
   <div class="drawer-header">
     <span>Risk Hunting</span>
@@ -1525,8 +1548,9 @@ a.ext-link:hover { color: var(--accent-d); }
   </div>
   <div class="lql-tabs">
     <div class="lql-tab active" data-tab="saved">LQL</div>
-    <div class="lql-tab" data-tab="generate">✨ Assisted Investigation</div>
-    <div class="lql-tab" data-tab="investigate">🔎 Cloud Investigation</div>
+    <div class="lql-tab" data-tab="generate">LQL Builder</div>
+    <div class="lql-tab" data-tab="investigate-ondevice">FortiCNAPP Search</div>
+    <div class="lql-tab" data-tab="cve">Attack Surface</div>
   </div>
 
   <div class="lql-pane active" id="lql-pane-saved">
@@ -1553,28 +1577,36 @@ a.ext-link:hover { color: var(--accent-d); }
     <div id="lql-gen-results"></div>
   </div>
 
-  <div class="lql-pane" id="lql-pane-investigate">
+  <div class="lql-pane" id="lql-pane-investigate-ondevice">
     <div class="drawer-body">
-      <input id="investigate-prompt" class="drawer-input" type="text"
+      <input id="investigate-od-prompt" class="drawer-input" type="text"
              placeholder="e.g. find EC2 instances with public S3 buckets attached"
              autocomplete="off" style="flex:1;min-width:160px" />
-      <button id="investigate-btn" class="drawer-btn primary">🔎 Investigate</button>
-      <span id="investigate-status" class="drawer-status"></span>
+      <button id="investigate-od-btn" class="drawer-btn primary">Investigate</button>
+      <span id="investigate-od-status" class="drawer-status"></span>
     </div>
-    <div id="investigate-stepper" class="progress-stepper" style="display:none">
+    <div id="investigate-od-stepper" class="progress-stepper" style="display:none">
       <div class="stepper-track"></div>
       <span class="stepper-elapsed"></span>
     </div>
   </div>
-</div>
 
-<div id="log-tabs">
-  <button class="log-tab active" data-pane="latest">Latest</button>
-  <button class="log-tab"        data-pane="all">History</button>
+  <div class="lql-pane" id="lql-pane-cve">
+    <div class="drawer-body">
+      <input id="cve-input" class="drawer-input" type="text" placeholder="CVE-2021-44228" autocomplete="off" spellcheck="false" />
+      <select id="cve-days" class="drawer-select" style="flex:0;min-width:0;width:90px" title="Wider windows are split into 7-day chunks server-side and merged">
+        <option value="7"  selected>7 days</option>
+        <option value="14">14 days</option>
+        <option value="30">30 days</option>
+      </select>
+      <button id="cve-search"  class="drawer-btn primary">Search</button>
+      <span id="cve-status" class="drawer-status"></span>
+    </div>
+    <div id="cve-results" class="drawer-results"></div>
+  </div>
 </div>
 
 <div id="log-latest" class="log-pane active"></div>
-<div id="log-all"    class="log-pane"></div>
 
 <div id="input-row">
   <textarea id="prompt" placeholder="Ask me anything…" rows="1"></textarea>
@@ -1588,7 +1620,7 @@ a.ext-link:hover { color: var(--accent-d); }
 
 <!-- SBOM format picker — at body level so it's never clipped by #fcnapp-menu -->
 <div id="sbom-picker">
-  <div class="sbom-picker-title">📦 SBOM Format</div>
+  <div class="sbom-picker-title">SBOM Format</div>
 
   <div class="sbom-fmt-group">
     <div class="sbom-fmt-group-label">Lacework</div>
@@ -1624,6 +1656,6 @@ a.ext-link:hover { color: var(--accent-d); }
   </div>
 </div>
 
-<script src="panel.js"></script>
+<script type="module" src="panel.js"></script>
 </body>
 </html>

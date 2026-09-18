@@ -3,10 +3,10 @@
   "name": "FortiAIScout",
   "version": "2.0",
   "description": "Secure AI chat side panel — FortiAIScout",
-  "permissions": ["storage", "sidePanel", "tabs", "activeTab", "scripting", "identity", "contextMenus"],
+  "permissions": ["storage", "unlimitedStorage", "sidePanel", "tabs", "activeTab", "scripting", "identity", "contextMenus"],
   "host_permissions": ["https://*/*", "http://localhost/*"],
   "content_security_policy": {
-    "extension_pages": "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src https://api.github.com https://raw.githubusercontent.com https: http://localhost:45321 http://host.docker.internal:*; img-src 'self' data:"
+    "extension_pages": "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src https://api.github.com https://raw.githubusercontent.com http://localhost:45321 http://localhost:8000 https://huggingface.co https://*.huggingface.co https://cas-bridge.xethub.hf.co https://*.hf.co; img-src 'self' data:; worker-src 'self'"
   },
   "web_accessible_resources": [{ "resources": ["config.json"], "matches": ["<all_urls>"] }],
   "content_scripts": [{
